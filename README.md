@@ -18,12 +18,8 @@ or through nginx as a reverse proxy.
 - **Network**: per-interface in/out throughput in bytes/sec, both as raw
   numbers and as a pre-formatted string that automatically scales between
   KiB/s, MiB/s, GiB/s, TiB/s depending on how much traffic is flowing.
-- **Uptime**: current host uptime (seconds since boot, plus a human string
-  like `27d 1h 49m 9s`), and rolling reliability percentages over the last
-  7/14/30/365 days - how much of that window the agent was actually alive
-  and reporting. This history is written to a small JSON file
-  (`uptime_state_path`, default `uptime.json`) so it survives restarts and
-  reboots; without that, a 365-day figure would be meaningless.
+- **Uptime**: current host uptime - seconds since boot, plus a human string
+  like `27d 1h 49m 9s`.
 
 ## Build
 
@@ -71,11 +67,6 @@ Copy `config.example.json` to `config.json` and edit it:
   Leave empty to just take the first sensor found. On many VPS/cloud hosts
   there is no exposed temperature sensor at all - `temperature_c` will be
   `null` in that case, which is expected, not a bug.
-- `uptime_state_path` is where the rolling-uptime history file lives
-  (default `uptime.json`, relative to the working directory). Make sure
-  this path stays writable - if you're running under the provided
-  systemd unit, it's already covered by `ReadWritePaths=/opt/statusserver`
-  as long as you leave it at the default relative path.
 
 ## Run
 

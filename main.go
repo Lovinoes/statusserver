@@ -28,7 +28,6 @@ type Config struct {
 	Networks        []string           `json:"networks"`          // interface names to watch; empty = all non-virtual
 	NetworkMaxMbps  map[string]float64 `json:"network_max_mbps"`  // optional, for showing % of link capacity
 	TempSensorMatch string             `json:"temp_sensor_match"` // substring match against sensor key, e.g. "coretemp"
-	UptimeStatePath string             `json:"uptime_state_path"` // where the rolling-uptime history file lives
 }
 
 func loadConfig(path string) Config {
@@ -36,7 +35,6 @@ func loadConfig(path string) Config {
 		ListenAddr:      ":8090",
 		IntervalSeconds: 5,
 		AllowedOrigins:  []string{"*"},
-		UptimeStatePath: "uptime.json",
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -55,9 +53,6 @@ func loadConfig(path string) Config {
 	}
 	if len(cfg.AllowedOrigins) == 0 {
 		cfg.AllowedOrigins = []string{"*"}
-	}
-	if cfg.UptimeStatePath == "" {
-		cfg.UptimeStatePath = "uptime.json"
 	}
 	return cfg
 }
@@ -126,10 +121,9 @@ func main() {
 
 	cfg := loadConfig(*configPath)
 	hub := newHub()
-	uptime := loadUptimeStore(cfg.UptimeStatePath)
 	latest.Store([]byte(`{}`))
 
-	go collectLoop(cfg, hub, uptime)
+	go collectLoop(cfg, hub)
 
 	mux := http.NewServeMux()
 
@@ -188,12 +182,11 @@ func main() {
 	}
 }
 
-func collectLoop(cfg Config, hub *Hub, uptime *UptimeStore) {
+func collectLoop(cfg Config, hub *Hub) {
 	ticker := time.NewTicker(time.Duration(cfg.IntervalSeconds) * time.Second)
 	defer ticker.Stop()
 	for {
-		uptime.heartbeat(cfg.IntervalSeconds)
-		snap := collect(cfg, uptime)
+		snap := collect(cfg)
 		data, err := json.Marshal(snap)
 		if err != nil {
 			log.Println("marshal error:", err)
