@@ -1,0 +1,27 @@
+# Reverse proxy for the status server running on 127.0.0.1:8090.
+# Put this in a server{} block (with your own ssl_certificate lines) on the
+# machine you want the public hostname to live on.
+
+server {
+    listen 443 ssl;
+    server_name monitor.example.com;
+
+    # ssl_certificate     /etc/letsencrypt/live/monitor.example.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/monitor.example.com/privkey.pem;
+
+    location /ws {
+        proxy_pass http://127.0.0.1:8090/ws;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 3600s;   # keep long-lived websocket alive
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8090/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}

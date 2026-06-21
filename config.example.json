@@ -1,0 +1,13 @@
+{
+  "listen_addr": ":8090",
+  "interval_seconds": 5,
+  "auth_token": "change-me-to-a-long-random-secret",
+  "allowed_origins": ["https://status.example.com"],
+
+  "disks": ["/", "/mnt/data"],
+  "networks": ["eth0"],
+  "network_max_mbps": {
+    "eth0": 1000
+  },
+  "temp_sensor_match": "coretemp"
+}

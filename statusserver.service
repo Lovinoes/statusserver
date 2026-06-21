@@ -1,0 +1,20 @@
+[Unit]
+Description=Status Monitoring Server
+After=network.target
+
+[Service]
+Type=simple
+User=statusserver
+WorkingDirectory=/opt/statusserver
+ExecStart=/opt/statusserver/statusserver -config /opt/statusserver/config.json
+Restart=on-failure
+RestartSec=5
+
+# basic hardening - drop privileges, no write access outside its own dir
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/statusserver
+
+[Install]
+WantedBy=multi-user.target
