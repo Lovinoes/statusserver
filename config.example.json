@@ -9,5 +9,6 @@
   "network_max_mbps": {
     "eth0": 1000
   },
-  "temp_sensor_match": "coretemp"
+  "temp_sensor_match": "coretemp",
+  "uptime_state_path": "uptime.json"
 }

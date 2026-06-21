@@ -17,6 +17,16 @@ type Snapshot struct {
 	Memory    MemoryInfo    `json:"memory"`
 	Storage   []StorageInfo `json:"storage"`
 	Network   []NetworkInfo `json:"network"`
+	Uptime    UptimeInfo    `json:"uptime"`
+}
+
+type UptimeInfo struct {
+	Seconds     uint64  `json:"seconds"`      // host uptime, seconds since boot
+	Human       string  `json:"human"`        // e.g. "27d 1h 49m 9s"
+	Percent7d   float64 `json:"percent_7d"`   // agent reliability over the last 7 days
+	Percent14d  float64 `json:"percent_14d"`
+	Percent30d  float64 `json:"percent_30d"`
+	Percent365d float64 `json:"percent_365d"`
 }
 
 type CPUInfo struct {
@@ -60,7 +70,7 @@ type NetworkInfo struct {
 var prevNet = map[string]net.IOCountersStat{}
 var prevNetTime time.Time
 
-func collect(cfg Config) Snapshot {
+func collect(cfg Config, uptime *UptimeStore) Snapshot {
 	snap := Snapshot{Timestamp: time.Now()}
 
 	if pct, err := cpu.Percent(0, false); err == nil && len(pct) > 0 {
@@ -155,6 +165,15 @@ func collect(cfg Config) Snapshot {
 		}
 		prevNetTime = now
 	}
+
+	if secs, err := host.Uptime(); err == nil {
+		snap.Uptime.Seconds = secs
+		snap.Uptime.Human = humanizeDuration(secs)
+	}
+	snap.Uptime.Percent7d = uptime.percent(7)
+	snap.Uptime.Percent14d = uptime.percent(14)
+	snap.Uptime.Percent30d = uptime.percent(30)
+	snap.Uptime.Percent365d = uptime.percent(365)
 
 	return snap
 }
