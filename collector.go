@@ -4,11 +4,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/host"
-	"github.com/shirou/gopsutil/v3/mem"
-	"github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/host"
+	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/net"
+	"github.com/shirou/gopsutil/v4/sensors"
 )
 
 type Snapshot struct {
@@ -21,13 +22,18 @@ type Snapshot struct {
 }
 
 type UptimeInfo struct {
-	Seconds uint64 `json:"seconds"` // host uptime, seconds since boot
-	Human   string `json:"human"`   // e.g. "27d 1h 49m 9s"
+	Seconds uint64 `json:"seconds"` // host uptime since boot
+	Human   string `json:"human"`
+
+	// Percent* reflect this agent's reporting reliability, not host uptime.
+	Percent7d   float64 `json:"percent_7d"`
+	Percent14d  float64 `json:"percent_14d"`
+	Percent30d  float64 `json:"percent_30d"`
+	Percent365d float64 `json:"percent_365d"`
 }
 
 type CPUInfo struct {
-	// nil if no temperature sensor could be read (common on VPS/cloud hosts).
-	TemperatureC *float64 `json:"temperature_c"`
+	TemperatureC *float64 `json:"temperature_c"` // nil if no sensor
 	UsagePercent float64  `json:"usage_percent"`
 }
 
@@ -61,19 +67,30 @@ type NetworkInfo struct {
 	MaxMbps       *float64 `json:"max_mbps,omitempty"`
 }
 
-// prevNet/prevNetTime hold the previous tick's raw counters so we can turn
-// cumulative byte counts into a per-second rate.
-var prevNet = map[string]net.IOCountersStat{}
-var prevNetTime time.Time
+// Collector holds per-tick state to derive network rates and the uptime store.
+type Collector struct {
+	uptime *UptimeStore
 
-func collect(cfg Config) Snapshot {
+	prevNet     map[string]net.IOCountersStat
+	prevNetTime time.Time
+}
+
+// NewCollector builds a Collector. If uptime is nil, percentages report 100%.
+func NewCollector(uptime *UptimeStore) *Collector {
+	return &Collector{
+		uptime:  uptime,
+		prevNet: map[string]net.IOCountersStat{},
+	}
+}
+
+func (col *Collector) collect(cfg Config) Snapshot {
 	snap := Snapshot{Timestamp: time.Now()}
 
 	if pct, err := cpu.Percent(0, false); err == nil && len(pct) > 0 {
 		snap.CPU.UsagePercent = pct[0]
 	}
 
-	if temps, err := host.SensorsTemperatures(); err == nil {
+	if temps, err := sensors.SensorsTemperatures(); err == nil {
 		for _, t := range temps {
 			if cfg.TempSensorMatch == "" || strings.Contains(strings.ToLower(t.SensorKey), strings.ToLower(cfg.TempSensorMatch)) {
 				v := t.Temperature
@@ -117,8 +134,8 @@ func collect(cfg Config) Snapshot {
 
 	if counters, err := net.IOCounters(true); err == nil {
 		now := time.Now()
-		elapsed := now.Sub(prevNetTime).Seconds()
-		if elapsed <= 0 {
+		elapsed := now.Sub(col.prevNetTime).Seconds()
+		if col.prevNetTime.IsZero() || elapsed <= 0 {
 			elapsed = float64(cfg.IntervalSeconds)
 		}
 		for _, c := range counters {
@@ -131,9 +148,8 @@ func collect(cfg Config) Snapshot {
 			}
 
 			var rxRate, txRate float64
-			if prev, ok := prevNet[c.Name]; ok {
-				// Guard against counter resets (interface restart, reboot)
-				// which would otherwise underflow into a huge bogus rate.
+			if prev, ok := col.prevNet[c.Name]; ok {
+				// Guard against counter resets (interface restart/reboot).
 				if c.BytesRecv >= prev.BytesRecv {
 					rxRate = float64(c.BytesRecv-prev.BytesRecv) / elapsed
 				}
@@ -152,19 +168,32 @@ func collect(cfg Config) Snapshot {
 				TxTotalBytes:  c.BytesSent,
 			}
 			if max, ok := cfg.NetworkMaxMbps[c.Name]; ok {
-				info.MaxMbps = &max
+				m := max
+				info.MaxMbps = &m
 			}
 			snap.Network = append(snap.Network, info)
 		}
 		for _, c := range counters {
-			prevNet[c.Name] = c
+			col.prevNet[c.Name] = c
 		}
-		prevNetTime = now
+		col.prevNetTime = now
 	}
 
 	if secs, err := host.Uptime(); err == nil {
 		snap.Uptime.Seconds = secs
 		snap.Uptime.Human = humanizeDuration(secs)
+	}
+
+	if col.uptime != nil {
+		snap.Uptime.Percent7d = roundPct(col.uptime.percent(7))
+		snap.Uptime.Percent14d = roundPct(col.uptime.percent(14))
+		snap.Uptime.Percent30d = roundPct(col.uptime.percent(30))
+		snap.Uptime.Percent365d = roundPct(col.uptime.percent(365))
+	} else {
+		snap.Uptime.Percent7d = 100
+		snap.Uptime.Percent14d = 100
+		snap.Uptime.Percent30d = 100
+		snap.Uptime.Percent365d = 100
 	}
 
 	return snap

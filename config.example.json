@@ -9,5 +9,21 @@
   "network_max_mbps": {
     "eth0": 1000
   },
-  "temp_sensor_match": "coretemp"
+  "temp_sensor_match": "coretemp",
+  "uptime_file": "uptime.json",
+
+  "max_conns_per_ip": 10,
+  "trust_proxy_headers": false,
+
+  "tls_cert": "",
+  "tls_key": "",
+
+  "alerts": {
+    "webhook_url": "",
+    "webhook_format": "discord",
+    "cpu_percent": 90,
+    "memory_percent": 90,
+    "disk_percent": 90,
+    "temp_c": 85
+  }
 }

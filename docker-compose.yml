@@ -1,0 +1,58 @@
+services:
+  statusserver:
+    image: ghcr.io/lovinoes/statusserver:latest
+    # Prefer building locally? Comment out `image:` above and uncomment:
+    # build: .
+    container_name: statusserver
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8090}:8090"
+    environment:
+      LISTEN_ADDR: ":8090"
+      INTERVAL_SECONDS: "${INTERVAL_SECONDS:-5}"
+      # Require ?token=... or `Authorization: Bearer` on /api/status, /ws and
+      # /metrics. Empty = open access. Set this before exposing publicly.
+      AUTH_TOKEN: "${AUTH_TOKEN:-}"
+      # Comma-separated CORS / websocket origin allow-list ("*" = any).
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
+      # Cap concurrent websocket connections per client IP (0 = unlimited).
+      MAX_CONNS_PER_IP: "${MAX_CONNS_PER_IP:-10}"
+      # Trust X-Forwarded-For for the client IP. Enable ONLY behind a trusted
+      # reverse proxy; otherwise clients can spoof it and evade MAX_CONNS_PER_IP.
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-false}"
+
+      # Optional overrides - uncomment to use.
+      # DISKS: "/,/data"
+      # NETWORKS: "eth0"
+      # NETWORK_MAX_MBPS: "eth0=1000"
+      # TEMP_SENSOR_MATCH: "coretemp"
+
+      # Alerts - set ALERT_WEBHOOK_URL to enable. A threshold of 0 disables it.
+      # ALERT_WEBHOOK_URL: "https://discord.com/api/webhooks/..."
+      # ALERT_WEBHOOK_FORMAT: "discord"   # discord | slack | generic
+      # ALERT_CPU_PERCENT: "90"
+      # ALERT_MEMORY_PERCENT: "90"
+      # ALERT_DISK_PERCENT: "90"
+      # ALERT_TEMP_C: "85"
+
+      # Native TLS - also mount the cert+key (see the volumes block).
+      # TLS_CERT: "/certs/tls.crt"
+      # TLS_KEY: "/certs/tls.key"
+    volumes:
+      # Persist agent-uptime history across restarts.
+      - statusserver-data:/data
+      # TLS material, if serving HTTPS/WSS directly:
+      # - ./certs:/certs:ro
+
+    # Host monitoring: by default the container reports its OWN namespaced
+    # view. To report real HOST metrics, add the two mounts below to the
+    # volumes block above, set `pid: host`, and add HOST_PROC/HOST_SYS to the
+    # environment block above:
+    #   volumes:      - /proc:/host/proc:ro
+    #                 - /sys:/host/sys:ro
+    #   environment:  HOST_PROC: /host/proc
+    #                 HOST_SYS: /host/sys
+    # pid: host
+
+volumes:
+  statusserver-data:

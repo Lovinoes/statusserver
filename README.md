@@ -8,6 +8,23 @@ over both a plain HTTP polling endpoint and a websocket push endpoint.
 Your separate status website (running anywhere) connects to it - directly,
 or through nginx as a reverse proxy.
 
+It ships as a single static binary and a multi-arch container image
+(`ghcr.io/lovinoes/statusserver`) for `linux/amd64`, `arm64`, `arm/v7`, and
+`riscv64`.
+
+## Features
+
+- Live metrics over HTTP (`/api/status`) and websocket (`/ws`).
+- Zero-config startup with layered configuration: defaults, then a JSON
+  file, then environment variables (env wins).
+- Prometheus-compatible `/metrics` endpoint (dependency-free exporter).
+- Optional native TLS (serve `https`/`wss` directly, no reverse proxy
+  required).
+- Optional threshold alerts posted to a Discord / Slack / generic webhook.
+- Hardened websockets: keepalive pings reap dead connections, and an
+  optional per-IP connection cap.
+- Graceful shutdown, liveness (`/healthz`) and readiness (`/readyz`) probes.
+
 ## What it monitors
 
 - **CPU**: temperature (where the OS exposes a sensor) and overall usage %.
@@ -34,9 +51,55 @@ Cross-compile for a Linux server from anywhere, e.g. from a Mac:
 GOOS=linux GOARCH=amd64 go build -o statusserver .
 ```
 
+Stamp version info into the binary (what `-version` and `/metrics` report):
+
+```
+go build -ldflags "-s -w \
+  -X main.version=1.2.3 \
+  -X main.commit=$(git rev-parse --short HEAD) \
+  -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o statusserver .
+```
+
+## Run with Docker
+
+The image is published to GHCR and configured entirely via environment
+variables, so no config file is needed:
+
+```
+docker run -d --name statusserver \
+  -p 8090:8090 \
+  -e AUTH_TOKEN=change-me \
+  -e ALLOWED_ORIGINS=https://status.example.com \
+  -v statusserver-data:/data \
+  ghcr.io/lovinoes/statusserver:latest
+```
+
+Or with Compose (see `docker-compose.yml`; copy `.env.example` to `.env` to
+set values without editing the file):
+
+```
+docker compose up -d
+```
+
+By default the container reports its **own** namespaced view of the system.
+To report the real host metrics, mount `/proc` and `/sys` and set
+`HOST_PROC` / `HOST_SYS` (see the commented block in `docker-compose.yml`).
+
 ## Configure
 
-Copy `config.example.json` to `config.json` and edit it:
+Configuration is resolved in three layers, each overriding the previous:
+
+1. built-in defaults,
+2. an optional JSON file (`-config config.json`),
+3. environment variables (`AUTH_TOKEN`, `LISTEN_ADDR`, ...).
+
+Each env var maps 1:1 to a JSON key, upper-cased (`listen_addr` ->
+`LISTEN_ADDR`). Copy `config.example.json` to `config.json` and edit it, or
+skip the file entirely and use environment variables (ideal for containers).
+
+**See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full reference**
+(every option, its env var, default, and behaviour). A quick example config
+file:
 
 ```json
 {
@@ -47,26 +110,19 @@ Copy `config.example.json` to `config.json` and edit it:
   "disks": ["/", "/mnt/data"],
   "networks": ["eth0"],
   "network_max_mbps": { "eth0": 1000 },
-  "temp_sensor_match": "coretemp"
+  "temp_sensor_match": "coretemp",
+  "uptime_file": "uptime.json",
+  "max_conns_per_ip": 10,
+  "alerts": {
+    "webhook_url": "",
+    "webhook_format": "discord",
+    "cpu_percent": 90,
+    "memory_percent": 90,
+    "disk_percent": 90,
+    "temp_c": 85
+  }
 }
 ```
-
-- `disks` / `networks` empty -> auto-detects everything (real partitions,
-  non-virtual interfaces). Fill them in to monitor only specific
-  mounts/NICs, which is the normal case when you have several disks or
-  a docker bridge you don't care about.
-- `auth_token` is optional but you should set it once this is reachable
-  from the internet - anyone with the URL can otherwise read your server's
-  live stats. The website passes it as `?token=...` (plain WebSocket
-  connections from a browser can't set custom headers) or as an
-  `Authorization: Bearer ...` header for the HTTP endpoint.
-- `allowed_origins` is the CORS / websocket-origin allowlist. Set it to
-  your actual status website's origin instead of `"*"` once it's live.
-- `temp_sensor_match` is a case-insensitive substring matched against the
-  sensor name gopsutil finds (e.g. `coretemp`, `k10temp`, `cpu_thermal`).
-  Leave empty to just take the first sensor found. On many VPS/cloud hosts
-  there is no exposed temperature sensor at all - `temperature_c` will be
-  `null` in that case, which is expected, not a bug.
 
 ## Run
 
@@ -74,11 +130,33 @@ Copy `config.example.json` to `config.json` and edit it:
 ./statusserver -config config.json
 ```
 
-or install `statusserver.service` (edit the paths/user first) and:
+Useful flags:
+
+- `-version` prints build info and exits.
+- `-healthcheck` probes the local `/healthz` and exits `0`/`1` (used by the
+  container `HEALTHCHECK`).
+
+Install `statusserver.service` (edit the paths/user first) and:
 
 ```
 sudo systemctl enable --now statusserver
 ```
+
+## Endpoints
+
+| Path | Auth | Purpose |
+| --- | --- | --- |
+| `/api/status` | token | latest snapshot as JSON |
+| `/ws` | token | websocket snapshot stream |
+| `/metrics` | token | Prometheus text exposition |
+| `/healthz` | none | liveness probe (`200 ok`) |
+| `/readyz` | none | readiness (`200` after first sample) |
+| `/version` | none | build info as JSON |
+
+`/healthz` carries no system data, so it's safe to expose.
+
+**See [`docs/API.md`](docs/API.md) for the full API reference** - auth,
+request/response schemas, the websocket protocol, and the `/metrics` output.
 
 ## Reverse proxy (nginx)
 

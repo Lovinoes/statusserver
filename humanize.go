@@ -2,11 +2,10 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
-// humanizeBytes picks the smallest unit that keeps the number under 1024,
-// so 40 MiB stays "40.00 MiB" and 2100 MiB becomes "2.05 GiB" automatically.
 func humanizeBytes(b float64) string {
 	if b < 0 {
 		b = 0
@@ -20,8 +19,6 @@ func humanizeBytes(b float64) string {
 	return fmt.Sprintf("%.2f %s", b, units[i])
 }
 
-// humanizeDuration turns a seconds count into "27d 1h 49m 9s" style text,
-// dropping leading units that are zero.
 func humanizeDuration(totalSeconds uint64) string {
 	d := time.Duration(totalSeconds) * time.Second
 	days := int(d / (24 * time.Hour))
@@ -39,4 +36,8 @@ func humanizeDuration(totalSeconds uint64) string {
 	default:
 		return fmt.Sprintf("%ds", secs)
 	}
+}
+
+func roundPct(p float64) float64 {
+	return math.Round(p*100) / 100
 }
