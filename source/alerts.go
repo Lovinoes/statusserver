@@ -75,7 +75,7 @@ func (n *Notifier) Check(ctx context.Context, snap Snapshot) {
 }
 
 // evaluate compares the snapshot against thresholds, updates firing state, and
-// returns messages for any OK<->breach transitions. No I/O, so it's testable.
+// returns messages for any OK<->breach transitions.
 func (n *Notifier) evaluate(snap Snapshot) []string {
 	type eval struct {
 		key       string

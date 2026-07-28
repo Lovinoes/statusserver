@@ -17,6 +17,8 @@ Ships as a single static binary and a multi-arch container image
   env vars (env wins).
 - **Prometheus** `/metrics` endpoint, no extra dependencies.
 - **Native TLS** - serve `https`/`wss` yourself, no reverse proxy needed.
+  Strict TLS 1.3-only with post-quantum key exchange (`X25519MLKEM768`,
+  falling back to `X25519`/`secp384r1`) and HTTP/2.
 - **Threshold alerts** to Discord / Slack / any webhook.
 - **Hardened websockets** - keepalive pings reap dead clients, optional
   per-IP connection cap.

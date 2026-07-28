@@ -51,7 +51,7 @@ func (s *UptimeStore) save() error {
 		os.Remove(tmp)
 		return err
 	}
-	// Atomic rename: a crash mid-write never leaves a corrupt state file.
+	// atomic rename: a crash mid-write never leaves a corrupt state file.
 	return os.Rename(tmp, s.path)
 }
 

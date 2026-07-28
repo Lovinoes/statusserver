@@ -8,6 +8,12 @@ build-info endpoints are always open.
 - Content type: JSON unless noted otherwise.
 - All timestamps are RFC 3339 / ISO 8601 in UTC.
 
+When native TLS is enabled the server enforces TLS 1.3 only with post-quantum
+key exchange (`X25519MLKEM768`, then `X25519`/`secp384r1`) and advertises HTTP/2
+via ALPN. Regular endpoints are served over HTTP/2; the `/ws` WebSocket uses
+HTTP/1.1 (negotiated automatically via ALPN), which browsers handle
+transparently.
+
 ## Authentication
 
 Auth applies only when `auth_token` (env `AUTH_TOKEN`) is set. If it is empty,

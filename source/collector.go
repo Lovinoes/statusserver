@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,9 +76,7 @@ type Collector struct {
 	prevNet     map[string]net.IOCountersStat
 	prevNetTime time.Time
 
-	// sensorErrLogged ensures a failing temperature read is logged only once,
-	// not on every collection tick. collect runs in a single goroutine
-	// (collectLoop), so no synchronization is needed.
+	// sensorErrLogged makes a failing temperature read log only once.
 	sensorErrLogged bool
 }
 
@@ -98,12 +97,9 @@ func (col *Collector) collect(cfg Config) Snapshot {
 		debugf("cpu.Percent error: %v", err)
 	}
 
-	// gopsutil may return partial results alongside a non-nil error, so use
-	// whatever temps came back regardless of err. If err is non-nil and no
-	// usable reading was found, log it once: this distinguishes a genuine
-	// "no sensor" (temps empty, err nil) from a permission/query failure
-	// (e.g. on Windows the ACPI thermal WMI class requires Administrator and
-	// otherwise returns access-denied).
+	// gopsutil may hand back partial results alongside a non-nil error, so use
+	// whatever temps came back. log a genuine failure once (on windows the
+	// thermal wmi class often needs administrator).
 	temps, tempErr := sensors.SensorsTemperatures()
 	if debugMode() {
 		debugf("sensors: %d reading(s), err=%v", len(temps), tempErr)
@@ -137,7 +133,7 @@ func (col *Collector) collect(cfg Config) Snapshot {
 
 	if parts, err := disk.Partitions(false); err == nil {
 		for _, p := range parts {
-			if len(cfg.Disks) > 0 && !contains(cfg.Disks, p.Mountpoint) {
+			if len(cfg.Disks) > 0 && !slices.Contains(cfg.Disks, p.Mountpoint) {
 				debugf("disk skipped (not in configured list): %s", p.Mountpoint)
 				continue
 			}
@@ -169,7 +165,7 @@ func (col *Collector) collect(cfg Config) Snapshot {
 		}
 		for _, c := range counters {
 			if len(cfg.Networks) > 0 {
-				if !contains(cfg.Networks, c.Name) {
+				if !slices.Contains(cfg.Networks, c.Name) {
 					debugf("nic skipped (not in configured list): %s", c.Name)
 					continue
 				}
@@ -180,7 +176,7 @@ func (col *Collector) collect(cfg Config) Snapshot {
 
 			var rxRate, txRate float64
 			if prev, ok := col.prevNet[c.Name]; ok {
-				// Guard against counter resets (interface restart/reboot).
+				// guard against counter resets (interface restart/reboot).
 				if c.BytesRecv >= prev.BytesRecv {
 					rxRate = float64(c.BytesRecv-prev.BytesRecv) / elapsed
 				}
@@ -232,15 +228,6 @@ func (col *Collector) collect(cfg Config) Snapshot {
 	}
 
 	return snap
-}
-
-func contains(list []string, item string) bool {
-	for _, v := range list {
-		if v == item {
-			return true
-		}
-	}
-	return false
 }
 
 func isLikelyVirtual(name string) bool {

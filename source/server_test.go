@@ -103,10 +103,10 @@ func TestRemoteIP(t *testing.T) {
 	}{
 		{"", "1.2.3.4:5555", false, "1.2.3.4"},
 		{"", "1.2.3.4:5555", true, "1.2.3.4"},
-		// Trusted proxy: honor the first XFF hop.
+		// trusted proxy: honor the first xff hop.
 		{"9.9.9.9, 10.0.0.1", "1.2.3.4:5555", true, "9.9.9.9"},
 		{"8.8.8.8", "1.2.3.4:5555", true, "8.8.8.8"},
-		// Untrusted: ignore spoofable XFF, use transport address.
+		// untrusted: ignore spoofable xff, use transport address.
 		{"9.9.9.9, 10.0.0.1", "1.2.3.4:5555", false, "1.2.3.4"},
 		{"8.8.8.8", "1.2.3.4:5555", false, "1.2.3.4"},
 	}
@@ -170,7 +170,7 @@ func TestNotifierDisabledIsNoop(t *testing.T) {
 	if n.enabled {
 		t.Error("notifier without webhook should be disabled")
 	}
-	// Should not panic or block.
+	// should not panic or block.
 	n.Check(context.Background(), Snapshot{CPU: CPUInfo{UsagePercent: 100}})
 }
 
@@ -180,17 +180,17 @@ func TestNotifierEdgeTrigger(t *testing.T) {
 		t.Fatal("notifier should be enabled")
 	}
 
-	// Below threshold: no state.
+	// below threshold: no state.
 	n.evaluate(Snapshot{CPU: CPUInfo{UsagePercent: 50}})
 	if n.isFiring("cpu") {
 		t.Error("cpu should not be firing at 50%")
 	}
-	// Cross threshold: firing.
+	// cross threshold: firing.
 	n.evaluate(Snapshot{CPU: CPUInfo{UsagePercent: 90}})
 	if !n.isFiring("cpu") {
 		t.Error("cpu should be firing at 90%")
 	}
-	// Recover.
+	// recover.
 	n.evaluate(Snapshot{CPU: CPUInfo{UsagePercent: 10}})
 	if n.isFiring("cpu") {
 		t.Error("cpu should have recovered at 10%")

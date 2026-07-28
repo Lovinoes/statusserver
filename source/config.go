@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// Config is the resolved runtime configuration, built in three layers:
-// defaults, optional JSON file, then environment variables (env wins).
-// Each env var maps 1:1 to a JSON key, upper-cased.
+// Config is the resolved runtime configuration: defaults, then optional json
+// file, then environment variables (env wins). each env var maps to a json
+// key, upper-cased.
 type Config struct {
 	ListenAddr      string             `json:"listen_addr"`
 	IntervalSeconds int                `json:"interval_seconds"`
@@ -23,18 +23,17 @@ type Config struct {
 	TempSensorMatch string             `json:"temp_sensor_match"` // sensor key substring, e.g. "coretemp"
 	UptimeFile      string             `json:"uptime_file"`       // empty = "uptime.json"
 
-	// Set both to serve HTTPS/WSS directly; empty serves plain HTTP.
+	// set both to serve https/wss directly; empty serves plain http.
 	TLSCert string `json:"tls_cert"`
 	TLSKey  string `json:"tls_key"`
 
 	MaxConnsPerIP int `json:"max_conns_per_ip"` // per-IP websocket cap (0 = unlimited)
 
-	// Trust X-Forwarded-For for client IP. Enable only behind a trusted
-	// reverse proxy; otherwise clients can spoof it and evade MaxConnsPerIP.
+	// trust X-Forwarded-For for client ip. enable only behind a trusted
+	// reverse proxy; otherwise clients can spoof it and dodge MaxConnsPerIP.
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 
-	// Debug turns on verbose logging: request headers, per-tick collection
-	// detail, alert evaluation, websocket lifecycle, etc.
+	// debug turns on verbose logging (request headers, collection detail, etc).
 	Debug bool `json:"debug"`
 
 	Alerts AlertConfig `json:"alerts"`
@@ -78,8 +77,7 @@ func loadConfig(path string) Config {
 	return cfg
 }
 
-// applyEnv overlays set environment variables onto cfg. Only variables that
-// are present take effect, so env overrides the file selectively.
+// applyEnv overlays any set environment variables onto cfg.
 func applyEnv(cfg *Config) {
 	if v, ok := os.LookupEnv("LISTEN_ADDR"); ok {
 		cfg.ListenAddr = v
@@ -169,9 +167,7 @@ func normalizeConfig(cfg *Config) {
 // TLSEnabled reports whether HTTPS should be served.
 func (c Config) TLSEnabled() bool { return c.TLSCert != "" && c.TLSKey != "" }
 
-// redactedString renders the config for debug logging with secrets masked, so
-// the full effective configuration can be inspected without leaking the auth
-// token or webhook URL.
+// redactedString renders the config for debug logging with secrets masked.
 func (c Config) redactedString() string {
 	authToken := "(empty)"
 	if c.AuthToken != "" {

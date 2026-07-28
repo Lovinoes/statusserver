@@ -1,25 +1,20 @@
 # statusserver configuration reference
 
-`statusserver` resolves its configuration in three layers, each overriding the
-previous:
+Config resolves in three layers, each overriding the last:
 
-1. **Built-in defaults** - enough to start with zero configuration.
-2. **JSON config file** - optional, selected with `-config <path>`.
-3. **Environment variables** - override individual settings; env always wins.
+1. **built-in defaults** - enough to run with zero config.
+2. **JSON config file** - optional, via `-config <path>`.
+3. **environment variables** - override individual settings; env always wins.
 
-This layering is what makes the container workflow ergonomic: run the image
-with no files on disk and configure everything with a handful of environment
-variables, or drop a `config.json` in for a traditional deployment, or mix
-both (file for the bulk, env for the secrets).
+So you can run the container with no files and set everything via env, drop in
+a `config.json`, or mix both (file for the bulk, env for the secrets).
 
 ## Environment variable mapping
 
-Every env var maps 1:1 to a JSON key, upper-cased. `listen_addr` becomes
-`LISTEN_ADDR`, the nested `alerts.cpu_percent` becomes `ALERT_CPU_PERCENT`.
-Only variables that are actually **set** take effect, so env can override the
-file selectively without clobbering unset fields.
-
-There is no prefix - the variables are bare names.
+Every env var maps 1:1 to a JSON key, upper-cased (`listen_addr` ->
+`LISTEN_ADDR`, nested `alerts.cpu_percent` -> `ALERT_CPU_PERCENT`). Only vars
+that are actually **set** take effect, so env overrides the file selectively.
+No prefix - bare names.
 
 ## Options
 
@@ -103,60 +98,61 @@ capacity" bar. Interfaces not listed simply omit the field.
 ### `temp_sensor_match`
 Case-insensitive substring matched against the sensor name gopsutil finds
 (e.g. `coretemp`, `k10temp`, `cpu_thermal`). Empty takes the first sensor
-found. Many VPS/cloud hosts expose no sensor at all - `temperature_c` is
-`null` there, which is expected, not a bug.
+found. Many VPS/cloud hosts expose no sensor - `temperature_c` is `null`
+there, which is expected.
 
-On **Windows**, temperature comes from the ACPI thermal zone via WMI, which
-usually requires the process to run **as Administrator**; without elevation
-the query is denied and `temperature_c` is `null` even though a sensor exists.
-The reported value is a coarse ACPI zone temperature, not a true per-core CPU
-reading. When a read fails, the agent logs the reason once at startup (and on
-every attempt in `debug` mode), so you can tell "no sensor" apart from
-"access denied".
+On **Windows** temperature comes from the ACPI thermal zone via WMI, which
+usually needs the process to run **as Administrator**; without elevation the
+query is denied and `temperature_c` stays `null` even if a sensor exists. The
+value is a coarse ACPI zone reading, not a true per-core temp. A failed read
+is logged once at startup (every attempt in `debug` mode) so you can tell "no
+sensor" from "access denied".
 
 ### `uptime_file`
-Where the agent persists its own uptime history, used to compute the
-`percent_*` reliability figures. It must live somewhere the service can write.
-With the bundled systemd unit that means inside `/opt/statusserver`; in the
-container the `/data` volume is the natural place. Defaults to `uptime.json`
-in the working directory. Empty is normalized back to `uptime.json`.
+Where the agent persists its own uptime history for the `percent_*` figures.
+Must be writable by the service (systemd: inside `/opt/statusserver`;
+container: the `/data` volume). Defaults to `uptime.json` in the working
+directory.
 
 ### `tls_cert` / `tls_key`
-Set **both** to serve HTTPS/WSS directly, making an external reverse proxy
-optional. Leave **both** empty to serve plain HTTP behind a proxy. Setting
-only one is a fatal misconfiguration - the process exits at startup.
+Set **both** to serve HTTPS/WSS directly (no reverse proxy needed). Leave
+**both** empty for plain HTTP behind a proxy. Setting only one is fatal - the
+process exits at startup. The key pair is validated at startup, so a bad path
+fails immediately with a clear error.
+
+When TLS is on, the profile is deliberately strict:
+
+- **TLS 1.3 only** - 1.2 and older are rejected.
+- **Key exchange** (preference order): `X25519MLKEM768` (post-quantum hybrid),
+  then `X25519`, then `secp384r1`. Post-quantum is preferred automatically.
+- **ALPN** advertises `h2` then `http/1.1`. Normal endpoints use HTTP/2; `/ws`
+  negotiates down to HTTP/1.1 (what browsers do transparently), so WSS works
+  everywhere.
 
 ### `max_conns_per_ip`
-Caps concurrent websocket connections from a single client IP (`0` =
-unlimited). Guards against a client leaking connections and exhausting
-resources. When exceeded, the connection is accepted then immediately closed
-with websocket status `1013` (Try Again Later). The client IP comes from the
-transport connection unless `trust_proxy_headers` is enabled. Negative values
-are clamped to `0`.
+Caps concurrent websocket connections from one client IP (`0` = unlimited).
+When exceeded, the connection is accepted then closed with websocket status
+`1013` (Try Again Later). The client IP comes from the transport connection
+unless `trust_proxy_headers` is on. Negatives clamp to `0`.
 
 ### `trust_proxy_headers`
-When `true`, the client IP is taken from the first `X-Forwarded-For` hop
-instead of the transport remote address. Enable this **only** when the agent
-sits behind a trusted reverse proxy that sets the header. If left `false`
-(default) while directly reachable, clients cannot spoof `X-Forwarded-For` to
-evade `max_conns_per_ip`.
+When `true`, the client IP comes from the first `X-Forwarded-For` hop instead
+of the transport address. Enable **only** behind a trusted reverse proxy that
+sets the header. Left `false` (default), clients can't spoof
+`X-Forwarded-For` to dodge `max_conns_per_ip`.
 
 ### `debug`
-When `true`, enables verbose debug logging. The agent **always** logs one
-access-log line per HTTP request (method, path, client IP, status, size,
-duration) - that is the normal log output you see with `docker compose logs`
-or when running the binary directly. Enabling `debug` adds, on top of that:
+The agent **always** logs one access-log line per request (method, path,
+client IP, status, size, duration). `debug` adds, on top:
 
-- Request headers and query string for every request (the `Authorization`
-  header, `Cookie`, and any `token` query parameter are redacted).
-- Per-tick collection detail: CPU/memory/disk/network results, each sensor
-  reading, and which disks/interfaces were skipped and why.
-- Websocket lifecycle (connect, disconnect, per-IP rejections).
-- Alert evaluation and webhook delivery results.
-- The full effective configuration at startup, with secrets redacted.
+- request headers + query string (auth token, `Cookie`, `token` param redacted)
+- per-tick collection detail (cpu/mem/disk/net, sensors, skipped devices)
+- websocket lifecycle and per-IP rejections
+- alert evaluation + webhook results
+- the full effective config at startup (secrets redacted)
 
-Debug is cross-platform and safe to leave off in production; it can be noisy.
-Toggle it with `DEBUG=true` (env) or `"debug": true` (JSON).
+Safe to leave off in production; it's noisy. Toggle with `DEBUG=true` or
+`"debug": true`.
 
 ### `alerts`
 Posts a webhook message whenever a metric crosses its threshold, and again

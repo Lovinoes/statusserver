@@ -20,7 +20,7 @@ func TestHumanizeBytes(t *testing.T) {
 		{1024 * 1024 * 1024, "1.00 GiB"},
 		{1024.0 * 1024 * 1024 * 1024, "1.00 TiB"},
 		{1024.0 * 1024 * 1024 * 1024 * 1024, "1.00 PiB"},
-		// Beyond the largest unit it stays in PiB rather than overflowing.
+		// beyond the largest unit it stays in PiB rather than overflowing.
 		{1024.0 * 1024 * 1024 * 1024 * 1024 * 1024, "1024.00 PiB"},
 	}
 	for _, c := range cases {
@@ -67,19 +67,6 @@ func TestRoundPct(t *testing.T) {
 	}
 }
 
-func TestContains(t *testing.T) {
-	list := []string{"eth0", "/", "/mnt/data"}
-	if !contains(list, "eth0") {
-		t.Error("expected contains to find eth0")
-	}
-	if contains(list, "eth1") {
-		t.Error("did not expect contains to find eth1")
-	}
-	if contains(nil, "x") {
-		t.Error("empty list should contain nothing")
-	}
-}
-
 func TestIsLikelyVirtual(t *testing.T) {
 	virtual := []string{"lo", "docker0", "veth1234", "br-abcdef", "virbr0", "tun0", "tap0"}
 	for _, n := range virtual {
@@ -96,8 +83,8 @@ func TestIsLikelyVirtual(t *testing.T) {
 }
 
 func TestUptimePercentFreshInstall(t *testing.T) {
-	// A store with no history at all should report 100% - there's nothing
-	// to penalize a brand new install for.
+	// a store with no history at all should report 100% - nothing to
+	// penalize a brand new install for.
 	s := &UptimeStore{Days: map[string]int{}}
 	for _, n := range []int{7, 14, 30, 365} {
 		if got := s.percent(n); got != 100 {
@@ -107,8 +94,8 @@ func TestUptimePercentFreshInstall(t *testing.T) {
 }
 
 func TestUptimePercentFullCoverage(t *testing.T) {
-	// Agent has existed for 10 full days and recorded a full 86400s each of
-	// the last 7 completed days plus everything elapsed today. That should
+	// agent has existed for 10 full days and recorded a full 86400s each of
+	// the last 7 completed days plus everything elapsed today. that should
 	// come out very close to 100%.
 	now := time.Now().UTC()
 	s := &UptimeStore{
@@ -126,10 +113,10 @@ func TestUptimePercentFullCoverage(t *testing.T) {
 }
 
 func TestUptimePercentHalfDown(t *testing.T) {
-	// Exactly half of every day in the window is recorded as up, including
-	// the partial slice of today. That must come out to ~50% no matter what
-	// time of day the test runs at (the prorated "today" bucket otherwise
-	// grows through the day and skews a fixed value).
+	// exactly half of every day in the window is recorded as up, including
+	// the partial slice of today. that must come out to ~50% no matter what
+	// time of day the test runs (the prorated "today" bucket otherwise grows
+	// through the day and skews a fixed value).
 	now := time.Now().UTC()
 	s := &UptimeStore{
 		Days:      map[string]int{},
@@ -170,7 +157,7 @@ func TestUptimeHeartbeatAccumulates(t *testing.T) {
 
 func TestUptimeHeartbeatCapsAtDay(t *testing.T) {
 	s := &UptimeStore{Days: map[string]int{}}
-	// A single absurdly long interval must never exceed a full day.
+	// a single absurdly long interval must never exceed a full day.
 	if err := s.heartbeat(100000); err != nil {
 		t.Fatalf("heartbeat: %v", err)
 	}
@@ -189,7 +176,7 @@ func TestUptimeStorePersistRoundTrip(t *testing.T) {
 		t.Fatalf("heartbeat: %v", err)
 	}
 
-	// Reload from disk and confirm the counters survived.
+	// reload from disk and confirm the counters survived.
 	s2 := loadUptimeStore(path)
 	day := time.Now().UTC().Format("2006-01-02")
 	if s2.Days[day] != 5 {
@@ -202,7 +189,7 @@ func TestUptimeStorePersistRoundTrip(t *testing.T) {
 
 func TestUptimePruneKeepsRecent(t *testing.T) {
 	s := &UptimeStore{Days: map[string]int{}}
-	// Seed 410 days of history to trigger pruning.
+	// seed 410 days of history to trigger pruning.
 	base := time.Now().UTC()
 	for i := 0; i < 410; i++ {
 		day := base.AddDate(0, 0, -i).Format("2006-01-02")
@@ -212,7 +199,7 @@ func TestUptimePruneKeepsRecent(t *testing.T) {
 	if len(s.Days) > 400 {
 		t.Errorf("after prune, len(Days) = %d, want <= 400", len(s.Days))
 	}
-	// Today must always survive pruning.
+	// today must always survive pruning.
 	if _, ok := s.Days[base.Format("2006-01-02")]; !ok {
 		t.Error("today should not be pruned")
 	}

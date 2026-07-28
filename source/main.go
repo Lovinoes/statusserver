@@ -23,7 +23,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Build info, injected at link time via -ldflags.
+// build info, injected at link time via -ldflags.
 var (
 	version = "dev"
 	commit  = "none"
@@ -35,12 +35,11 @@ func versionString() string {
 		version, commit, date, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }
 
-// Hub tracks websocket clients, broadcasts snapshots, and enforces an
-// optional per-IP connection cap.
+// hub tracks websocket clients and caps connections per IP (optional).
 type Hub struct {
 	mu            sync.Mutex
-	clients       map[*websocket.Conn]string // conn -> remote IP
-	perIP         map[string]int             // remote IP -> live count
+	clients       map[*websocket.Conn]string // conn -> remote ip
+	perIP         map[string]int             // remote ip -> live count
 	maxConnsPerIP int
 }
 
@@ -52,7 +51,7 @@ func newHub(maxConnsPerIP int) *Hub {
 	}
 }
 
-// tryAdd registers a client unless it would exceed the per-IP cap.
+// tryAdd registers a client unless it would blow past the per-IP cap.
 func (h *Hub) tryAdd(c *websocket.Conn, ip string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -78,8 +77,8 @@ func (h *Hub) remove(c *websocket.Conn) {
 }
 
 func (h *Hub) broadcast(data []byte) {
-	// Snapshot the client set under lock, then write outside it so one slow
-	// client can't block broadcasts to everyone else.
+	// grab the client list under lock, then write outside it and in parallel
+	// so one slow client can't hold up delivery to everyone else.
 	h.mu.Lock()
 	clients := make([]*websocket.Conn, 0, len(h.clients))
 	for c := range h.clients {
@@ -87,25 +86,29 @@ func (h *Hub) broadcast(data []byte) {
 	}
 	h.mu.Unlock()
 
+	var wg sync.WaitGroup
 	for _, c := range clients {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := c.Write(ctx, websocket.MessageText, data)
-		cancel()
-		if err != nil {
-			go c.CloseNow()
-			h.remove(c)
-		}
+		wg.Add(1)
+		go func(c *websocket.Conn) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := c.Write(ctx, websocket.MessageText, data)
+			cancel()
+			if err != nil {
+				c.CloseNow()
+				h.remove(c)
+			}
+		}(c)
 	}
+	wg.Wait()
 }
 
-// count returns the number of connected clients.
 func (h *Hub) count() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.clients)
 }
 
-// closeAll drops every client on graceful shutdown.
 func (h *Hub) closeAll() {
 	h.mu.Lock()
 	clients := make([]*websocket.Conn, 0, len(h.clients))
@@ -121,15 +124,11 @@ func (h *Hub) closeAll() {
 	}
 }
 
-// latest holds the most recent snapshot as marshalled JSON, served instantly
-// to pollers and new websocket clients.
-var latest atomic.Value
-
-// snapshotStore holds the most recent typed *Snapshot, e.g. for /metrics.
-var snapshotStore atomic.Value
-
-// ready flips true after the first snapshot, backing /readyz.
-var ready atomic.Bool
+var (
+	latest        atomic.Value // most recent snapshot as marshalled json
+	snapshotStore atomic.Value // most recent typed *Snapshot, for /metrics
+	ready         atomic.Bool  // flips true after the first snapshot
+)
 
 func checkAuth(cfg Config, r *http.Request) bool {
 	if cfg.AuthToken == "" {
@@ -151,8 +150,8 @@ func corsAllowed(cfg Config, origin string) bool {
 	return false
 }
 
-// warnInsecureExposure logs a warning when the agent is reachable off-host
-// without an auth token, since that leaves the status/metrics endpoints open.
+// warnInsecureExposure warns when the agent is reachable off-host without an
+// auth token, which leaves the status/metrics endpoints wide open.
 func warnInsecureExposure(cfg Config) {
 	if cfg.AuthToken != "" {
 		return
@@ -164,6 +163,23 @@ func warnInsecureExposure(cfg Config) {
 	loopback := host == "127.0.0.1" || host == "::1" || host == "localhost"
 	if !loopback {
 		log.Printf("WARNING: auth_token is empty and listen_addr %q is not loopback; /api/status, /ws and /metrics are exposed without authentication", cfg.ListenAddr)
+	}
+}
+
+// hardenedTLSConfig is the profile used when serving TLS directly: TLS 1.3
+// only, key exchange locked to a post-quantum hybrid then classical curves
+// (in preference order), and ALPN offering h2 with an http/1.1 fallback that
+// websocket upgrades negotiate down to.
+func hardenedTLSConfig() *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		MaxVersion: tls.VersionTLS13,
+		CurvePreferences: []tls.CurveID{
+			tls.X25519MLKEM768,
+			tls.X25519,
+			tls.CurveP384,
+		},
+		NextProtos: []string{"h2", "http/1.1"},
 	}
 }
 
@@ -198,7 +214,6 @@ func main() {
 	collector := NewCollector(uptime)
 	notifier := NewNotifier(cfg.Alerts)
 
-	// Root context cancelled on SIGINT/SIGTERM for clean shutdown.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -232,13 +247,11 @@ func main() {
 		}
 	})
 
-	// Liveness probe, unauthenticated.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
 
-	// Readiness probe: ready only after the first snapshot is collected.
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if !ready.Load() {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
@@ -248,7 +261,6 @@ func main() {
 		_, _ = w.Write([]byte("ready\n"))
 	})
 
-	// Version/build info.
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -261,7 +273,6 @@ func main() {
 		})
 	})
 
-	// Prometheus metrics endpoint, auth-gated like /api/status.
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		if !checkAuth(cfg, r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -271,7 +282,6 @@ func main() {
 		writeMetrics(w, latestSnapshot(), hub.count())
 	})
 
-	// Websocket push: sends a snapshot immediately, then every interval.
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		if !checkAuth(cfg, r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -299,12 +309,11 @@ func main() {
 		cancel()
 
 		// CloseRead handles incoming control frames and cancels when the peer
-		// goes away. Tied to the root context so shutdown unblocks it.
+		// goes away; tied to the root context so shutdown unblocks it.
 		connCtx := c.CloseRead(ctx)
 
-		// Keepalive pings so dead TCP connections are detected and reaped.
-		keepaliveInterval := 30 * time.Second
-		ka := time.NewTicker(keepaliveInterval)
+		// keepalive pings so dead tcp connections get spotted and reaped.
+		ka := time.NewTicker(30 * time.Second)
 		defer ka.Stop()
 		for {
 			select {
@@ -327,21 +336,28 @@ func main() {
 		Addr:              cfg.ListenAddr,
 		Handler:           accessLog(mux),
 		ReadHeaderTimeout: 10 * time.Second,
-		// No overall WriteTimeout: it would kill long-lived /ws connections.
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		// no overall WriteTimeout: it would kill long-lived /ws connections.
 	}
 
-	// Run the server; ListenAndServe returns ErrServerClosed on graceful
-	// shutdown, which is not a failure.
+	// validate the key pair up front so a bad path fails fast instead of
+	// blowing up deep inside ListenAndServeTLS after we've logged "listening".
+	if cfg.TLSEnabled() {
+		if _, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey); err != nil {
+			log.Fatalf("failed to load TLS key pair (cert %q, key %q): %v", cfg.TLSCert, cfg.TLSKey, err)
+		}
+		srv.TLSConfig = hardenedTLSConfig()
+	}
+
 	serverErr := make(chan error, 1)
 	go func() {
-		scheme := "http"
 		if cfg.TLSEnabled() {
-			scheme = "https"
-		}
-		log.Printf("status server listening on %s (%s, interval %ds)", cfg.ListenAddr, scheme, cfg.IntervalSeconds)
-		if cfg.TLSEnabled() {
+			log.Printf("status server listening on %s (https, interval %ds)", cfg.ListenAddr, cfg.IntervalSeconds)
+			log.Printf("TLS profile: TLS 1.3 only, key exchange X25519MLKEM768/X25519/secp384r1, ALPN h2,http/1.1")
 			serverErr <- srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
 		} else {
+			log.Printf("status server listening on %s (http, interval %ds)", cfg.ListenAddr, cfg.IntervalSeconds)
 			serverErr <- srv.ListenAndServe()
 		}
 	}()
@@ -355,7 +371,6 @@ func main() {
 		log.Println("shutdown signal received, draining...")
 	}
 
-	// Graceful shutdown: stop accepting, close websockets, flush uptime.
 	stop() // restore default signal handling so a second Ctrl-C force-quits
 	hub.closeAll()
 
@@ -407,10 +422,9 @@ func collectLoop(ctx context.Context, cfg Config, hub *Hub, collector *Collector
 	}
 }
 
-// remoteIP extracts the client IP. It honors a single X-Forwarded-For hop
-// only when trustProxy is set (a trusted reverse proxy is in front);
-// otherwise it uses the transport remote address, since clients can spoof
-// the header to evade per-IP limits.
+// remoteIP extracts the client IP. it honors the first X-Forwarded-For hop
+// only when trustProxy is set; otherwise it uses the transport address, since
+// clients can spoof the header to dodge per-IP limits.
 func remoteIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
@@ -427,8 +441,6 @@ func remoteIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
-// latestSnapshot returns the most recent snapshot, or a zero value if none
-// has been collected yet.
 func latestSnapshot() Snapshot {
 	if s, ok := snapshotStore.Load().(*Snapshot); ok && s != nil {
 		return *s
@@ -437,14 +449,12 @@ func latestSnapshot() Snapshot {
 }
 
 // runHealthcheck does a one-shot request to the local /healthz endpoint and
-// returns a process exit code (0 = healthy). Invoked via
-// `statusserver -healthcheck` from the container HEALTHCHECK, avoiding curl.
+// returns a process exit code (0 = healthy), for the container HEALTHCHECK.
 func runHealthcheck(cfg Config) int {
 	scheme := "http"
 	if cfg.TLSEnabled() {
 		scheme = "https"
 	}
-	// ListenAddr may be ":8090" or "0.0.0.0:8090"; probe loopback, same port.
 	host, port, err := net.SplitHostPort(cfg.ListenAddr)
 	if err != nil {
 		port = "8090"
@@ -457,7 +467,7 @@ func runHealthcheck(cfg Config) int {
 	client := &http.Client{
 		Timeout: 4 * time.Second,
 		Transport: &http.Transport{
-			// Probe hits our own loopback listener; skip cert verification
+			// probe hits our own loopback listener; skip cert verification
 			// so self-signed TLS setups still pass.
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
 		},

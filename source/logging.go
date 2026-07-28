@@ -11,33 +11,22 @@ import (
 	"time"
 )
 
-// debugEnabled is set once at startup and read on every request/tick. It is an
-// atomic so there is no data race between the collector goroutine, the HTTP
-// handler goroutines, and startup, regardless of platform.
+// debugEnabled is atomic: read by the collector goroutine and http handlers.
 var debugEnabled atomic.Bool
 
-// setDebug toggles verbose debug logging.
 func setDebug(on bool) { debugEnabled.Store(on) }
 
-// debugMode reports whether debug logging is on.
 func debugMode() bool { return debugEnabled.Load() }
 
-// debugf logs a message only when debug mode is enabled. The "DEBUG " prefix
-// makes verbose lines easy to grep or filter out.
 func debugf(format string, args ...any) {
 	if debugEnabled.Load() {
 		log.Printf("DEBUG "+format, args...)
 	}
 }
 
-// logResponseWriter wraps http.ResponseWriter to capture the status code and
-// number of bytes written for the access log.
-//
-// It deliberately implements Unwrap so that http.ResponseController and, more
-// importantly, the websocket library (coder/websocket walks Unwrap to find the
-// http.Hijacker) can still reach the underlying ResponseWriter. Without this,
-// /ws upgrades would fail. http.Flusher is also forwarded so streaming keeps
-// working. This is all standard-library based and therefore cross-platform.
+// logResponseWriter wraps http.ResponseWriter to grab the status code and
+// bytes written for the access log. it implements Unwrap/Hijack/Flush so the
+// websocket library (which needs http.Hijacker) can reach the real writer.
 type logResponseWriter struct {
 	http.ResponseWriter
 	status      int
@@ -56,7 +45,7 @@ func (w *logResponseWriter) WriteHeader(code int) {
 
 func (w *logResponseWriter) Write(b []byte) (int, error) {
 	if !w.wroteHeader {
-		// Mirror net/http: first Write implies 200.
+		// mirror net/http: first Write implies 200.
 		w.status = http.StatusOK
 		w.wroteHeader = true
 	}
@@ -69,9 +58,8 @@ func (w *logResponseWriter) Write(b []byte) (int, error) {
 // assertion (Hijacker, Flusher, etc.) keep working through the wrapper.
 func (w *logResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Hijack forwards to the underlying connection if it supports hijacking, which
-// the websocket handshake requires. Marking hijacked lets the access log note
-// the upgrade instead of a misleading status code.
+// Hijack forwards to the underlying connection, which the websocket handshake
+// needs.
 func (w *logResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hj, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
@@ -84,17 +72,14 @@ func (w *logResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return c, rw, err
 }
 
-// Flush forwards to the underlying Flusher when present.
 func (w *logResponseWriter) Flush() {
 	if fl, ok := w.ResponseWriter.(http.Flusher); ok {
 		fl.Flush()
 	}
 }
 
-// accessLog wraps a handler and logs one line per HTTP request: method, path,
-// client, status, size and duration. Always on (this is the "normal log
-// window" behaviour). When debug mode is enabled it additionally logs request
-// headers and query details.
+// accessLog logs one line per http request. in debug mode it also logs request
+// headers and query details (with secrets redacted).
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -116,8 +101,7 @@ func accessLog(next http.Handler) http.Handler {
 
 		dur := time.Since(start)
 		if lw.hijacked {
-			// Connection was hijacked (websocket). Status/bytes are not
-			// meaningful for the upgraded connection.
+			// hijacked (websocket): status/bytes aren't meaningful.
 			log.Printf("%s %s %s [upgraded] %s",
 				clientIP(r), r.Method, r.URL.Path, dur.Round(time.Microsecond))
 			return
@@ -127,9 +111,8 @@ func accessLog(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns a best-effort client address for logging. Unlike remoteIP
-// used for rate limiting, this is informational only and always prefers the
-// real transport address, falling back to RemoteAddr verbatim.
+// clientIP returns a best-effort client address for logging only (always the
+// transport address, never a spoofable header).
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -138,8 +121,7 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// redactHeader hides the value of sensitive headers so tokens are never
-// written to logs, even in debug mode.
+// redactHeader hides the value of sensitive headers so tokens never reach logs.
 func redactHeader(name, value string) string {
 	switch http.CanonicalHeaderKey(name) {
 	case "Authorization", "Cookie", "Set-Cookie", "Proxy-Authorization":
@@ -149,15 +131,13 @@ func redactHeader(name, value string) string {
 	}
 }
 
-// redactQuery masks sensitive query parameters (notably the auth token) before
-// a request's query string is logged in debug mode.
+// redactQuery masks sensitive query parameters (notably the auth token).
 func redactQuery(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	values, err := url.ParseQuery(raw)
 	if err != nil {
-		// Unparseable; return a placeholder rather than risk leaking a token.
 		return "[unparseable]"
 	}
 	if _, ok := values["token"]; ok {

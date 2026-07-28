@@ -1,6 +1,12 @@
-# Reverse proxy for the status server running on 127.0.0.1:8090.
-# Put this in a server{} block (with your own ssl_certificate lines) on the
-# machine you want the public hostname to live on.
+# reverse proxy for the status server on 127.0.0.1:8090. drop this into a
+# server{} block (with your own ssl_certificate lines).
+#
+# heads up: terminating tls here means nginx's tls settings apply to clients,
+# not the agent's. the agent's tls 1.3-only / post-quantum (X25519MLKEM768)
+# profile only kicks in when the agent serves tls itself (set tls_cert/tls_key
+# and point clients straight at it). to keep that end-to-end, either terminate
+# at the agent or give nginx an equivalent `ssl_protocols TLSv1.3;` + matching
+# curves.
 
 server {
     listen 443 ssl;
@@ -16,10 +22,10 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        # Needed if you enable TRUST_PROXY_HEADERS so per-IP limits see the
-        # real client IP rather than 127.0.0.1.
+        # needed if you enable TRUST_PROXY_HEADERS so per-ip limits see the
+        # real client ip instead of 127.0.0.1.
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 3600s;   # keep long-lived websocket alive
+        proxy_read_timeout 3600s;   # keep long-lived websockets alive
     }
 
     location /api/ {
