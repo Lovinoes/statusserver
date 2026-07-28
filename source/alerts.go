@@ -70,6 +70,7 @@ func (n *Notifier) Check(ctx context.Context, snap Snapshot) {
 	}
 	sort.Strings(msgs)
 	body := strings.Join(msgs, "\n")
+	debugf("alert transition(s) detected, posting %d message(s) to webhook", len(msgs))
 	go n.post(ctx, body)
 }
 
@@ -147,7 +148,9 @@ func (n *Notifier) post(ctx context.Context, message string) {
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		log.Printf("alert webhook returned %d", resp.StatusCode)
+		return
 	}
+	debugf("alert webhook delivered ok (status %d)", resp.StatusCode)
 }
 
 func (n *Notifier) payload(message string) ([]byte, string) {

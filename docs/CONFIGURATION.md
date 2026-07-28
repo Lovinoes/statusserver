@@ -38,6 +38,7 @@ There is no prefix - the variables are bare names.
 | `tls_key` | `TLS_KEY` | string | `""` | PEM private-key path |
 | `max_conns_per_ip` | `MAX_CONNS_PER_IP` | integer | `0` (unlimited) | Per-IP WS cap |
 | `trust_proxy_headers` | `TRUST_PROXY_HEADERS` | boolean | `false` | Trust `X-Forwarded-For` for client IP |
+| `debug` | `DEBUG` | boolean | `false` | Verbose debug logging (secrets redacted) |
 | `alerts.webhook_url` | `ALERT_WEBHOOK_URL` | string | `""` | Webhook URL; enables alerts |
 | `alerts.webhook_format` | `ALERT_WEBHOOK_FORMAT` | string | `generic` | `discord`/`slack`/`generic` |
 | `alerts.cpu_percent` | `ALERT_CPU_PERCENT` | number | `0` (off) | CPU % threshold |
@@ -105,6 +106,14 @@ Case-insensitive substring matched against the sensor name gopsutil finds
 found. Many VPS/cloud hosts expose no sensor at all - `temperature_c` is
 `null` there, which is expected, not a bug.
 
+On **Windows**, temperature comes from the ACPI thermal zone via WMI, which
+usually requires the process to run **as Administrator**; without elevation
+the query is denied and `temperature_c` is `null` even though a sensor exists.
+The reported value is a coarse ACPI zone temperature, not a true per-core CPU
+reading. When a read fails, the agent logs the reason once at startup (and on
+every attempt in `debug` mode), so you can tell "no sensor" apart from
+"access denied".
+
 ### `uptime_file`
 Where the agent persists its own uptime history, used to compute the
 `percent_*` reliability figures. It must live somewhere the service can write.
@@ -131,6 +140,23 @@ instead of the transport remote address. Enable this **only** when the agent
 sits behind a trusted reverse proxy that sets the header. If left `false`
 (default) while directly reachable, clients cannot spoof `X-Forwarded-For` to
 evade `max_conns_per_ip`.
+
+### `debug`
+When `true`, enables verbose debug logging. The agent **always** logs one
+access-log line per HTTP request (method, path, client IP, status, size,
+duration) - that is the normal log output you see with `docker compose logs`
+or when running the binary directly. Enabling `debug` adds, on top of that:
+
+- Request headers and query string for every request (the `Authorization`
+  header, `Cookie`, and any `token` query parameter are redacted).
+- Per-tick collection detail: CPU/memory/disk/network results, each sensor
+  reading, and which disks/interfaces were skipped and why.
+- Websocket lifecycle (connect, disconnect, per-IP rejections).
+- Alert evaluation and webhook delivery results.
+- The full effective configuration at startup, with secrets redacted.
+
+Debug is cross-platform and safe to leave off in production; it can be noisy.
+Toggle it with `DEBUG=true` (env) or `"debug": true` (JSON).
 
 ### `alerts`
 Posts a webhook message whenever a metric crosses its threshold, and again

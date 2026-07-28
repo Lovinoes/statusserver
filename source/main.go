@@ -185,6 +185,11 @@ func main() {
 	log.Printf("starting %s", versionString())
 
 	cfg := loadConfig(*configPath)
+	setDebug(cfg.Debug)
+	if cfg.Debug {
+		log.Println("debug logging enabled")
+		debugf("effective config: %s", cfg.redactedString())
+	}
 	warnInsecureExposure(cfg)
 	hub := newHub(cfg.MaxConnsPerIP)
 	latest.Store([]byte(`{}`))
@@ -282,10 +287,12 @@ func main() {
 
 		ip := remoteIP(r, cfg.TrustProxyHeaders)
 		if !hub.tryAdd(c, ip) {
+			debugf("ws rejected: per-IP cap reached for %s (limit %d)", ip, cfg.MaxConnsPerIP)
 			c.Close(websocket.StatusTryAgainLater, "connection limit reached")
 			return
 		}
 		defer hub.remove(c)
+		debugf("ws connected: ip=%s clients=%d", ip, hub.count())
 
 		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = c.Write(writeCtx, websocket.MessageText, latest.Load().([]byte))
@@ -302,6 +309,7 @@ func main() {
 		for {
 			select {
 			case <-connCtx.Done():
+				debugf("ws disconnected: ip=%s clients=%d", ip, hub.count()-1)
 				return
 			case <-ka.C:
 				pingCtx, cancelPing := context.WithTimeout(context.Background(), 10*time.Second)
@@ -317,7 +325,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           mux,
+		Handler:           accessLog(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No overall WriteTimeout: it would kill long-lived /ws connections.
 	}
@@ -380,6 +388,15 @@ func collectLoop(ctx context.Context, cfg Config, hub *Hub, collector *Collector
 			latest.Store(data)
 			ready.Store(true)
 			hub.broadcast(data)
+			if debugMode() {
+				temp := "null"
+				if snap.CPU.TemperatureC != nil {
+					temp = fmt.Sprintf("%.1fC", *snap.CPU.TemperatureC)
+				}
+				debugf("snapshot: cpu=%.1f%% temp=%s mem=%.1f%% disks=%d nics=%d clients=%d bytes=%d",
+					snap.CPU.UsagePercent, temp, snap.Memory.UsedPercent,
+					len(snap.Storage), len(snap.Network), hub.count(), len(data))
+			}
 		}
 		notifier.Check(ctx, snap)
 		select {

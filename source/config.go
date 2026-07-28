@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -31,6 +32,10 @@ type Config struct {
 	// Trust X-Forwarded-For for client IP. Enable only behind a trusted
 	// reverse proxy; otherwise clients can spoof it and evade MaxConnsPerIP.
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
+
+	// Debug turns on verbose logging: request headers, per-tick collection
+	// detail, alert evaluation, websocket lifecycle, etc.
+	Debug bool `json:"debug"`
 
 	Alerts AlertConfig `json:"alerts"`
 }
@@ -115,6 +120,9 @@ func applyEnv(cfg *Config) {
 	if v, ok := os.LookupEnv("TRUST_PROXY_HEADERS"); ok {
 		cfg.TrustProxyHeaders = atobOr(v, cfg.TrustProxyHeaders)
 	}
+	if v, ok := os.LookupEnv("DEBUG"); ok {
+		cfg.Debug = atobOr(v, cfg.Debug)
+	}
 
 	if v, ok := os.LookupEnv("ALERT_WEBHOOK_URL"); ok {
 		cfg.Alerts.WebhookURL = v
@@ -160,6 +168,31 @@ func normalizeConfig(cfg *Config) {
 
 // TLSEnabled reports whether HTTPS should be served.
 func (c Config) TLSEnabled() bool { return c.TLSCert != "" && c.TLSKey != "" }
+
+// redactedString renders the config for debug logging with secrets masked, so
+// the full effective configuration can be inspected without leaking the auth
+// token or webhook URL.
+func (c Config) redactedString() string {
+	authToken := "(empty)"
+	if c.AuthToken != "" {
+		authToken = "(set, len " + strconv.Itoa(len(c.AuthToken)) + ")"
+	}
+	webhook := "(empty)"
+	if c.Alerts.WebhookURL != "" {
+		webhook = redactURL(c.Alerts.WebhookURL)
+	}
+	return fmt.Sprintf(
+		"listen_addr=%q interval_seconds=%d auth_token=%s allowed_origins=%v "+
+			"disks=%v networks=%v network_max_mbps=%v temp_sensor_match=%q "+
+			"uptime_file=%q tls=%t max_conns_per_ip=%d trust_proxy_headers=%t debug=%t "+
+			"alerts{webhook=%s format=%q cpu=%.1f memory=%.1f disk=%.1f temp=%.1f}",
+		c.ListenAddr, c.IntervalSeconds, authToken, c.AllowedOrigins,
+		c.Disks, c.Networks, c.NetworkMaxMbps, c.TempSensorMatch,
+		c.UptimeFile, c.TLSEnabled(), c.MaxConnsPerIP, c.TrustProxyHeaders, c.Debug,
+		webhook, c.Alerts.WebhookFormat, c.Alerts.CPUPercent, c.Alerts.MemoryPercent,
+		c.Alerts.DiskPercent, c.Alerts.TempC,
+	)
+}
 
 // splitList parses a comma-separated value into a trimmed, non-empty slice;
 // empty input yields nil ("unset / auto").

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"strings"
 	"time"
 
@@ -73,6 +74,11 @@ type Collector struct {
 
 	prevNet     map[string]net.IOCountersStat
 	prevNetTime time.Time
+
+	// sensorErrLogged ensures a failing temperature read is logged only once,
+	// not on every collection tick. collect runs in a single goroutine
+	// (collectLoop), so no synchronization is needed.
+	sensorErrLogged bool
 }
 
 // NewCollector builds a Collector. If uptime is nil, percentages report 100%.
@@ -88,16 +94,33 @@ func (col *Collector) collect(cfg Config) Snapshot {
 
 	if pct, err := cpu.Percent(0, false); err == nil && len(pct) > 0 {
 		snap.CPU.UsagePercent = pct[0]
+	} else if err != nil {
+		debugf("cpu.Percent error: %v", err)
 	}
 
-	if temps, err := sensors.SensorsTemperatures(); err == nil {
+	// gopsutil may return partial results alongside a non-nil error, so use
+	// whatever temps came back regardless of err. If err is non-nil and no
+	// usable reading was found, log it once: this distinguishes a genuine
+	// "no sensor" (temps empty, err nil) from a permission/query failure
+	// (e.g. on Windows the ACPI thermal WMI class requires Administrator and
+	// otherwise returns access-denied).
+	temps, tempErr := sensors.SensorsTemperatures()
+	if debugMode() {
+		debugf("sensors: %d reading(s), err=%v", len(temps), tempErr)
 		for _, t := range temps {
-			if cfg.TempSensorMatch == "" || strings.Contains(strings.ToLower(t.SensorKey), strings.ToLower(cfg.TempSensorMatch)) {
-				v := t.Temperature
-				snap.CPU.TemperatureC = &v
-				break
-			}
+			debugf("    sensor %q = %.2fC", t.SensorKey, t.Temperature)
 		}
+	}
+	for _, t := range temps {
+		if cfg.TempSensorMatch == "" || strings.Contains(strings.ToLower(t.SensorKey), strings.ToLower(cfg.TempSensorMatch)) {
+			v := t.Temperature
+			snap.CPU.TemperatureC = &v
+			break
+		}
+	}
+	if snap.CPU.TemperatureC == nil && tempErr != nil && !col.sensorErrLogged {
+		col.sensorErrLogged = true
+		log.Printf("temperature unavailable: %v (temperature_c will be null; on Windows this sensor often requires running as Administrator)", tempErr)
 	}
 
 	if vm, err := mem.VirtualMemory(); err == nil {
@@ -108,15 +131,19 @@ func (col *Collector) collect(cfg Config) Snapshot {
 			TotalHuman:  humanizeBytes(float64(vm.Total)),
 			UsedHuman:   humanizeBytes(float64(vm.Used)),
 		}
+	} else {
+		debugf("mem.VirtualMemory error: %v", err)
 	}
 
 	if parts, err := disk.Partitions(false); err == nil {
 		for _, p := range parts {
 			if len(cfg.Disks) > 0 && !contains(cfg.Disks, p.Mountpoint) {
+				debugf("disk skipped (not in configured list): %s", p.Mountpoint)
 				continue
 			}
 			usage, err := disk.Usage(p.Mountpoint)
 			if err != nil {
+				debugf("disk.Usage(%s) error: %v", p.Mountpoint, err)
 				continue
 			}
 			snap.Storage = append(snap.Storage, StorageInfo{
@@ -130,6 +157,8 @@ func (col *Collector) collect(cfg Config) Snapshot {
 				UsedHuman:   humanizeBytes(float64(usage.Used)),
 			})
 		}
+	} else {
+		debugf("disk.Partitions error: %v", err)
 	}
 
 	if counters, err := net.IOCounters(true); err == nil {
@@ -141,9 +170,11 @@ func (col *Collector) collect(cfg Config) Snapshot {
 		for _, c := range counters {
 			if len(cfg.Networks) > 0 {
 				if !contains(cfg.Networks, c.Name) {
+					debugf("nic skipped (not in configured list): %s", c.Name)
 					continue
 				}
 			} else if isLikelyVirtual(c.Name) {
+				debugf("nic skipped (looks virtual): %s", c.Name)
 				continue
 			}
 
@@ -177,11 +208,15 @@ func (col *Collector) collect(cfg Config) Snapshot {
 			col.prevNet[c.Name] = c
 		}
 		col.prevNetTime = now
+	} else {
+		debugf("net.IOCounters error: %v", err)
 	}
 
 	if secs, err := host.Uptime(); err == nil {
 		snap.Uptime.Seconds = secs
 		snap.Uptime.Human = humanizeDuration(secs)
+	} else {
+		debugf("host.Uptime error: %v", err)
 	}
 
 	if col.uptime != nil {

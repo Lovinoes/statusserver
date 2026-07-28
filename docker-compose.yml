@@ -20,6 +20,10 @@ services:
       # Trust X-Forwarded-For for the client IP. Enable ONLY behind a trusted
       # reverse proxy; otherwise clients can spoof it and evade MAX_CONNS_PER_IP.
       TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-false}"
+      # Verbose debug logging (request headers, collection detail, ws lifecycle,
+      # alert evaluation). Every HTTP request is logged regardless; this adds
+      # detail. Secrets are redacted.
+      DEBUG: "${DEBUG:-false}"
 
       # Optional overrides - uncomment to use.
       # DISKS: "/,/data"
