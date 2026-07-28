@@ -126,20 +126,27 @@ func TestUptimePercentFullCoverage(t *testing.T) {
 }
 
 func TestUptimePercentHalfDown(t *testing.T) {
-	// Two complete days of history, with exactly half of each recorded as
-	// up. Ignoring the (small) prorated slice of today, this is ~50%.
+	// Exactly half of every day in the window is recorded as up, including
+	// the partial slice of today. That must come out to ~50% no matter what
+	// time of day the test runs at (the prorated "today" bucket otherwise
+	// grows through the day and skews a fixed value).
 	now := time.Now().UTC()
 	s := &UptimeStore{
 		Days:      map[string]int{},
 		FirstSeen: now.AddDate(0, 0, -3),
 	}
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	elapsedToday := int(now.Sub(midnight).Seconds())
+
+	today := now.Format("2006-01-02")
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 	dayBefore := now.AddDate(0, 0, -2).Format("2006-01-02")
+	s.Days[today] = elapsedToday / 2
 	s.Days[yesterday] = 43200
 	s.Days[dayBefore] = 43200
 
 	got := s.percent(3)
-	if got < 40 || got > 55 {
+	if got < 49 || got > 51 {
 		t.Errorf("percent(3) half-down = %v, want roughly 50", got)
 	}
 }
