@@ -12,11 +12,11 @@ RUN apk add --no-cache ca-certificates
 WORKDIR /src
 
 # Cache dependencies separately from source for faster rebuilds.
-COPY go.mod go.sum ./
+COPY source/go.mod source/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
-COPY . .
+COPY source/ .
 
 ARG TARGETOS
 ARG TARGETARCH
