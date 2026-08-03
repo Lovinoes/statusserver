@@ -80,7 +80,6 @@ type Collector struct {
 	sensorErrLogged bool
 }
 
-// NewCollector builds a Collector. If uptime is nil, percentages report 100%.
 func NewCollector(uptime *UptimeStore) *Collector {
 	return &Collector{
 		uptime:  uptime,
@@ -215,17 +214,10 @@ func (col *Collector) collect(cfg Config) Snapshot {
 		debugf("host.Uptime error: %v", err)
 	}
 
-	if col.uptime != nil {
-		snap.Uptime.Percent7d = roundPct(col.uptime.percent(7))
-		snap.Uptime.Percent14d = roundPct(col.uptime.percent(14))
-		snap.Uptime.Percent30d = roundPct(col.uptime.percent(30))
-		snap.Uptime.Percent365d = roundPct(col.uptime.percent(365))
-	} else {
-		snap.Uptime.Percent7d = 100
-		snap.Uptime.Percent14d = 100
-		snap.Uptime.Percent30d = 100
-		snap.Uptime.Percent365d = 100
-	}
+	snap.Uptime.Percent7d = roundPct(col.uptime.percent(7))
+	snap.Uptime.Percent14d = roundPct(col.uptime.percent(14))
+	snap.Uptime.Percent30d = roundPct(col.uptime.percent(30))
+	snap.Uptime.Percent365d = roundPct(col.uptime.percent(365))
 
 	return snap
 }

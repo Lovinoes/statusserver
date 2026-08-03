@@ -24,9 +24,8 @@ func debugf(format string, args ...any) {
 	}
 }
 
-// logResponseWriter wraps http.ResponseWriter to grab the status code and
-// bytes written for the access log. it implements Unwrap/Hijack/Flush so the
-// websocket library (which needs http.Hijacker) can reach the real writer.
+// logResponseWriter wraps http.ResponseWriter to capture status and bytes for
+// the access log. Hijack is direct so websocket upgrades set w.hijacked.
 type logResponseWriter struct {
 	http.ResponseWriter
 	status      int
@@ -55,7 +54,7 @@ func (w *logResponseWriter) Write(b []byte) (int, error) {
 }
 
 // Unwrap exposes the underlying ResponseWriter so features detected via type
-// assertion (Hijacker, Flusher, etc.) keep working through the wrapper.
+// assertion (Flusher, ReaderFrom, etc.) keep working through the wrapper.
 func (w *logResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Hijack forwards to the underlying connection, which the websocket handshake
@@ -70,12 +69,6 @@ func (w *logResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		w.hijacked = true
 	}
 	return c, rw, err
-}
-
-func (w *logResponseWriter) Flush() {
-	if fl, ok := w.ResponseWriter.(http.Flusher); ok {
-		fl.Flush()
-	}
 }
 
 // accessLog logs one line per http request. in debug mode it also logs request

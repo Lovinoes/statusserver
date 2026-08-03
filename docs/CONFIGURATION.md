@@ -169,55 +169,10 @@ set.
   `memory.used_percent`, `disk_percent` vs each disk's `used_percent`, and
   `temp_c` vs `cpu.temperature_c` (skipped when there is no sensor).
 
-## Example config file
+## Worked examples
 
-```json
-{
-  "listen_addr": ":8090",
-  "interval_seconds": 5,
-  "auth_token": "change-me-to-a-long-random-secret",
-  "allowed_origins": ["https://status.example.com"],
-  "disks": ["/", "/mnt/data"],
-  "networks": ["eth0"],
-  "network_max_mbps": { "eth0": 1000 },
-  "temp_sensor_match": "coretemp",
-  "uptime_file": "uptime.json",
-  "max_conns_per_ip": 10,
-  "trust_proxy_headers": false,
-  "tls_cert": "",
-  "tls_key": "",
-  "alerts": {
-    "webhook_url": "",
-    "webhook_format": "discord",
-    "cpu_percent": 90,
-    "memory_percent": 90,
-    "disk_percent": 90,
-    "temp_c": 85
-  }
-}
-```
-
-## Equivalent environment-only configuration
-
-```
-LISTEN_ADDR=:8090
-INTERVAL_SECONDS=5
-AUTH_TOKEN=change-me-to-a-long-random-secret
-ALLOWED_ORIGINS=https://status.example.com
-DISKS=/,/mnt/data
-NETWORKS=eth0
-NETWORK_MAX_MBPS=eth0=1000
-TEMP_SENSOR_MATCH=coretemp
-UPTIME_FILE=/data/uptime.json
-MAX_CONNS_PER_IP=10
-TRUST_PROXY_HEADERS=false
-ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...
-ALERT_WEBHOOK_FORMAT=discord
-ALERT_CPU_PERCENT=90
-ALERT_MEMORY_PERCENT=90
-ALERT_DISK_PERCENT=90
-ALERT_TEMP_C=85
-```
+- [`config.example.json`](../config.example.json) - every option, as a config file.
+- [`.env.example`](../.env.example) - the common subset as env vars, for `docker-compose.yml`.
 
 ## Command-line flags
 

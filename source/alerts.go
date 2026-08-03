@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,7 +32,7 @@ func NewNotifier(cfg AlertConfig) *Notifier {
 	enabled := cfg.WebhookURL != "" &&
 		(cfg.CPUPercent > 0 || cfg.MemoryPercent > 0 || cfg.DiskPercent > 0 || cfg.TempC > 0)
 	if enabled {
-		log.Printf("alerts enabled -> %s (format %q)", redactURL(cfg.WebhookURL), notifierFormat(cfg))
+		log.Printf("alerts enabled -> %s (format %q)", redactURL(cfg.WebhookURL), cmp.Or(cfg.WebhookFormat, "generic"))
 	}
 	return &Notifier{
 		cfg:     cfg,
@@ -39,13 +40,6 @@ func NewNotifier(cfg AlertConfig) *Notifier {
 		firing:  map[string]bool{},
 		enabled: enabled,
 	}
-}
-
-func notifierFormat(cfg AlertConfig) string {
-	if cfg.WebhookFormat == "" {
-		return "generic"
-	}
-	return cfg.WebhookFormat
 }
 
 // redactURL strips the path, query, and userinfo so a webhook secret is never
@@ -61,7 +55,7 @@ func redactURL(raw string) string {
 // Check evaluates a snapshot and dispatches transition notifications in the
 // background, never blocking the collection loop.
 func (n *Notifier) Check(ctx context.Context, snap Snapshot) {
-	if n == nil || !n.enabled {
+	if !n.enabled {
 		return
 	}
 	msgs := n.evaluate(snap)

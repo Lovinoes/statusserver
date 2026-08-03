@@ -168,26 +168,15 @@ func normalizeConfig(cfg *Config) {
 func (c Config) TLSEnabled() bool { return c.TLSCert != "" && c.TLSKey != "" }
 
 // redactedString renders the config for debug logging with secrets masked.
+// Value receiver, so we mask our own copy.
 func (c Config) redactedString() string {
-	authToken := "(empty)"
 	if c.AuthToken != "" {
-		authToken = "(set, len " + strconv.Itoa(len(c.AuthToken)) + ")"
+		c.AuthToken = "(set, len " + strconv.Itoa(len(c.AuthToken)) + ")"
 	}
-	webhook := "(empty)"
 	if c.Alerts.WebhookURL != "" {
-		webhook = redactURL(c.Alerts.WebhookURL)
+		c.Alerts.WebhookURL = redactURL(c.Alerts.WebhookURL)
 	}
-	return fmt.Sprintf(
-		"listen_addr=%q interval_seconds=%d auth_token=%s allowed_origins=%v "+
-			"disks=%v networks=%v network_max_mbps=%v temp_sensor_match=%q "+
-			"uptime_file=%q tls=%t max_conns_per_ip=%d trust_proxy_headers=%t debug=%t "+
-			"alerts{webhook=%s format=%q cpu=%.1f memory=%.1f disk=%.1f temp=%.1f}",
-		c.ListenAddr, c.IntervalSeconds, authToken, c.AllowedOrigins,
-		c.Disks, c.Networks, c.NetworkMaxMbps, c.TempSensorMatch,
-		c.UptimeFile, c.TLSEnabled(), c.MaxConnsPerIP, c.TrustProxyHeaders, c.Debug,
-		webhook, c.Alerts.WebhookFormat, c.Alerts.CPUPercent, c.Alerts.MemoryPercent,
-		c.Alerts.DiskPercent, c.Alerts.TempC,
-	)
+	return fmt.Sprintf("%+v", c)
 }
 
 // splitList parses a comma-separated value into a trimmed, non-empty slice;

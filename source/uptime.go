@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -147,10 +146,4 @@ func (s *UptimeStore) percent(n int) float64 {
 		return 100
 	}
 	return totalUp / totalExpected * 100
-}
-
-func (s *UptimeStore) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return fmt.Sprintf("UptimeStore(first_seen=%s, days=%d)", s.FirstSeen.Format(time.RFC3339), len(s.Days))
 }

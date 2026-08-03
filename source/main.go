@@ -9,11 +9,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,10 +82,7 @@ func (h *Hub) broadcast(data []byte) {
 	// grab the client list under lock, then write outside it and in parallel
 	// so one slow client can't hold up delivery to everyone else.
 	h.mu.Lock()
-	clients := make([]*websocket.Conn, 0, len(h.clients))
-	for c := range h.clients {
-		clients = append(clients, c)
-	}
+	clients := slices.Collect(maps.Keys(h.clients))
 	h.mu.Unlock()
 
 	var wg sync.WaitGroup
@@ -111,10 +110,7 @@ func (h *Hub) count() int {
 
 func (h *Hub) closeAll() {
 	h.mu.Lock()
-	clients := make([]*websocket.Conn, 0, len(h.clients))
-	for c := range h.clients {
-		clients = append(clients, c)
-	}
+	clients := slices.Collect(maps.Keys(h.clients))
 	h.clients = make(map[*websocket.Conn]string)
 	h.perIP = make(map[string]int)
 	h.mu.Unlock()
@@ -127,7 +123,6 @@ func (h *Hub) closeAll() {
 var (
 	latest        atomic.Value // most recent snapshot as marshalled json
 	snapshotStore atomic.Value // most recent typed *Snapshot, for /metrics
-	ready         atomic.Bool  // flips true after the first snapshot
 )
 
 func checkAuth(cfg Config, r *http.Request) bool {
@@ -253,7 +248,7 @@ func main() {
 	})
 
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		if !ready.Load() {
+		if latestSnapshot().Timestamp.IsZero() {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
@@ -389,19 +384,17 @@ func collectLoop(ctx context.Context, cfg Config, hub *Hub, collector *Collector
 	ticker := time.NewTicker(time.Duration(cfg.IntervalSeconds) * time.Second)
 	defer ticker.Stop()
 	for {
-		if collector.uptime != nil {
-			if err := collector.uptime.heartbeat(cfg.IntervalSeconds); err != nil {
-				log.Println("uptime persist error:", err)
-			}
+		if err := collector.uptime.heartbeat(cfg.IntervalSeconds); err != nil {
+			log.Println("uptime persist error:", err)
 		}
 		snap := collector.collect(cfg)
-		snapshotStore.Store(&snap)
 		data, err := json.Marshal(snap)
 		if err != nil {
 			log.Println("marshal error:", err)
 		} else {
+			// store only what we could publish, so /metrics and /readyz match /api/status.
+			snapshotStore.Store(&snap)
 			latest.Store(data)
-			ready.Store(true)
 			hub.broadcast(data)
 			if debugMode() {
 				temp := "null"
