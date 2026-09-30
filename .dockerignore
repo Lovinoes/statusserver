@@ -11,7 +11,7 @@
 LICENSE
 statusserver.service
 nginx.conf.example
-docker-compose.yml
+docker-compose*.yml
 .env.example
 config.example.json
 

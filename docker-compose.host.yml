@@ -1,0 +1,45 @@
+# statusserver reporting the HOST it runs on, not its own container.
+#
+#   docker compose -f docker-compose.host.yml up -d
+#
+# the agent shares the host's network (so it sees the real interfaces) and
+# pid namespace (so it sees the host's mounts), and reads the host's
+# filesystem read-only under /hostfs. linux hosts only.
+#
+# with host networking there's no port mapping: the agent listens directly on
+# the host at LISTEN_ADDR, so firewall it like any host service.
+
+services:
+  statusserver:
+    image: ghcr.io/lovinoes/statusserver:latest
+    container_name: statusserver
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    environment:
+      LISTEN_ADDR: "${LISTEN_ADDR:-:8090}"
+      INTERVAL_SECONDS: "${INTERVAL_SECONDS:-5}"
+      AUTH_TOKEN: "${AUTH_TOKEN:-}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
+      MAX_CONNS_PER_IP: "${MAX_CONNS_PER_IP:-10}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-false}"
+      DEBUG: "${DEBUG:-false}"
+
+      # point gopsutil at the host's /proc, /sys and /etc, and measure disk
+      # usage through the host's root filesystem.
+      HOST_PROC: /hostfs/proc
+      HOST_SYS: /hostfs/sys
+      HOST_ETC: /hostfs/etc
+      HOST_ROOT: /hostfs
+
+      # the rest works exactly as in docker-compose.yml, e.g.:
+      # DISKS: "/,/mnt/data"
+      # ALERT_WEBHOOK_URL: "https://discord.com/api/webhooks/..."
+      # ALERT_WEBHOOK_FORMAT: "discord"
+      # ALERT_DISK_PERCENT: "90"
+    volumes:
+      - statusserver-data:/data
+      - /:/hostfs:ro,rslave
+
+volumes:
+  statusserver-data:

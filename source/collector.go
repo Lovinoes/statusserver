@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"log"
+	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -203,7 +205,7 @@ func (col *Collector) collect(ctx context.Context) Snapshot {
 
 	if parts, err := disk.PartitionsWithContext(ctx, false); err == nil {
 		for _, p := range selectPartitions(parts, cfg.Disks) {
-			usage, err := disk.UsageWithContext(ctx, p.Mountpoint)
+			usage, err := disk.UsageWithContext(ctx, hostPath(p.Mountpoint))
 			if err != nil {
 				debugf("disk.Usage(%s) error: %v", p.Mountpoint, err)
 				continue
@@ -291,6 +293,18 @@ func (col *Collector) collect(ctx context.Context) Snapshot {
 	snap.Uptime.Percent365d = roundPct(col.uptime.Percent(365, now))
 
 	return snap
+}
+
+// hostPath maps a host mountpoint to where it's visible to us. In a container
+// monitoring its host, the host's root filesystem is bind-mounted somewhere
+// (HOST_ROOT, e.g. /hostfs) and HOST_PROC makes gopsutil list the host's
+// mounts, but it would still measure their size at the container's own path.
+func hostPath(mount string) string {
+	root := os.Getenv("HOST_ROOT")
+	if root == "" || root == "/" || runtime.GOOS == "windows" {
+		return mount
+	}
+	return filepath.Join(root, mount)
 }
 
 // selectPartitions picks the partitions to report. With an explicit list,

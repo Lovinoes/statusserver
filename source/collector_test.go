@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +122,26 @@ func TestCollectSmoke(t *testing.T) {
 	for _, key := range []string{`"storage":[`, `"network":[`, `"host":{`, `"load":`} {
 		if !strings.Contains(string(data), key) {
 			t.Errorf("json missing %s: %s", key, data)
+		}
+	}
+}
+
+func TestHostPath(t *testing.T) {
+	t.Setenv("HOST_ROOT", "")
+	if got := hostPath("/data"); got != "/data" {
+		t.Errorf("no HOST_ROOT: %q", got)
+	}
+	t.Setenv("HOST_ROOT", "/")
+	if got := hostPath("/data"); got != "/data" {
+		t.Errorf("HOST_ROOT=/: %q", got)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	t.Setenv("HOST_ROOT", "/hostfs")
+	for in, want := range map[string]string{"/": "/hostfs", "/data": "/hostfs/data", "/mnt/b/": "/hostfs/mnt/b"} {
+		if got := hostPath(in); got != want {
+			t.Errorf("hostPath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

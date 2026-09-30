@@ -1,109 +1,73 @@
 # statusserver
 
-A tiny Go agent you drop onto any machine to watch its health. It samples
-**CPU, load, memory, every disk, and per-interface network** every few seconds
-and serves it as JSON over HTTP polling *and* a websocket push stream.
+A tiny Go agent that watches a machine's health and serves it to your status
+page. Every few seconds it samples **CPU, load, memory, disks and network**,
+and serves the result as JSON (`/api/status`), as a live websocket stream
+(`/ws`), and as Prometheus metrics (`/metrics`).
 
-Point your status website at it - directly or through nginx - and you're done.
+- Single static binary, or a multi-arch image (`ghcr.io/lovinoes/statusserver`)
+  for `linux/amd64`, `arm64`, `arm/v7` and `riscv64`.
+- Zero-config start; configure with a JSON file and/or env vars.
+- Token auth, CORS allow-list, per-IP websocket limits.
+- Optional native TLS (TLS 1.3 only, post-quantum key exchange, HTTP/2) with
+  automatic certificate reload.
+- Threshold alerts to Discord, Slack or any webhook.
+- Health/readiness probes and graceful shutdown.
 
-Ships as a single static binary and a multi-arch container image
-(`ghcr.io/lovinoes/statusserver`) for `linux/amd64`, `arm64`, `arm/v7`, and
-`riscv64`. The binary also builds for Windows, macOS and FreeBSD.
+## Documentation
 
-## Why you might like it
+| | |
+| --- | --- |
+| **[Installation](docs/INSTALLATION.md)** | Docker, Docker Compose, monitoring the host from Docker, and a hardened standalone install with systemd |
+| **[Configuration](docs/CONFIGURATION.md)** | every option, its env var and default, alerts, TLS |
+| **[API](docs/API.md)** | endpoints, auth, the websocket protocol, the response format, Prometheus metrics |
 
-- **Live push** over websocket (`/ws`) *and* plain polling (`/api/status`).
-- **Zero-config start** - runs on sane defaults; override with a JSON file or
-  env vars (env wins).
-- **Prometheus** `/metrics` endpoint, no extra dependencies.
-- **Native TLS** - serve `https`/`wss` yourself, no reverse proxy needed.
-  Strict TLS 1.3-only with post-quantum key exchange (`X25519MLKEM768`,
-  falling back to `X25519`/`secp384r1`) and HTTP/2. Renewed certificates are
-  picked up automatically, no restart needed.
-- **Threshold alerts** to Discord / Slack / any webhook, with retries.
-- **Hardened websockets** - keepalive pings reap dead clients, slow clients
-  can't stall anyone else, optional per-IP connection cap.
-- **Graceful shutdown** plus `/healthz` and `/readyz` probes.
+## Quick start
+
+```bash
+TOKEN=$(openssl rand -hex 32); echo "Your token: $TOKEN"
+
+docker run -d --name statusserver --restart unless-stopped \
+  -p 8090:8090 \
+  -e AUTH_TOKEN="$TOKEN" \
+  -e ALLOWED_ORIGINS=https://status.example.com \
+  -v statusserver-data:/data \
+  ghcr.io/lovinoes/statusserver:latest
+
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8090/api/status
+```
+
+That container reports its own view. To monitor a server properly, run the
+agent as a systemd service or use `docker-compose.host.yml`; both are covered
+in the [installation guide](docs/INSTALLATION.md).
 
 ## What it reports
 
 | | |
 | --- | --- |
 | **Host** | hostname, OS, platform, kernel, architecture |
-| **CPU** | usage %, model, core count, load average (not on Windows), temperature (where a sensor exists) |
-| **Memory** | total / used bytes + percent |
-| **Storage** | every disk/mount, each against its *own* size |
-| **Network** | per-interface in/out throughput (raw + human string) |
-| **Uptime** | seconds since boot, a human string like `27d 1h 49m 9s`, and how reliably the agent itself has been running over 7/14/30/365 days |
-
-## Quick start
-
-Docker (configured entirely via env vars - no file needed):
-
-```bash
-docker run -d --name statusserver \
-  -p 8090:8090 \
-  -e AUTH_TOKEN=change-me \
-  -e ALLOWED_ORIGINS=https://status.example.com \
-  -v statusserver-data:/data \
-  ghcr.io/lovinoes/statusserver:latest
-```
-
-Or `docker compose up -d` with the included `docker-compose.yml` (optionally
-copy `.env.example` to `.env` to change the defaults).
-
-Or from source (Go 1.26+):
-
-```bash
-cd source
-go build -o statusserver .
-./statusserver -config ../config.json
-```
-
-By default the container reports its *own* namespaced view. To see the real
-host, mount `/proc` + `/sys` and set `HOST_PROC` / `HOST_SYS` (see the
-commented block in `docker-compose.yml`).
-
-## Configure
-
-Three layers, each overriding the last: **defaults -> JSON file -> env vars.**
-Every env var maps 1:1 to a JSON key, upper-cased (`listen_addr` ->
-`LISTEN_ADDR`). Copy `config.example.json` and edit, or skip the file and use
-env vars (ideal for containers).
-
-```json
-{
-  "listen_addr": ":8090",
-  "interval_seconds": 5,
-  "auth_token": "change-me-to-a-long-random-secret",
-  "allowed_origins": ["https://status.example.com"],
-  "disks": ["/", "/mnt/data"],
-  "networks": ["eth0"],
-  "network_max_mbps": { "eth0": 1000 },
-  "alerts": { "webhook_url": "", "cpu_percent": 90, "memory_percent": 90 }
-}
-```
-
-Full reference (every option, its env var, default, and behaviour):
-**[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)**.
+| **CPU** | usage %, model, core count, load average (not on Windows), temperature (if a sensor exists) |
+| **Memory** | total / used bytes and percent |
+| **Storage** | every disk/mount, each against its own size |
+| **Network** | per-interface throughput and totals |
+| **Uptime** | host uptime, plus how reliably the agent itself has run over 7/14/30/365 days |
 
 ## Endpoints
 
 | Path | Auth | Purpose |
 | --- | --- | --- |
 | `/api/status` | token | latest snapshot as JSON |
-| `/ws` | token | websocket snapshot stream |
-| `/metrics` | token | Prometheus text exposition |
-| `/healthz` | none | liveness (`200 ok`, no system data - safe to expose) |
+| `/ws` | token | websocket stream of snapshots |
+| `/metrics` | token | Prometheus metrics |
+| `/healthz` | none | liveness (`200 ok`, no system data) |
 | `/readyz` | none | readiness (`200` once sampling is running) |
-| `/version` | none | build info as JSON |
+| `/version` | none | build info |
 
-Full API reference - auth, schemas, the websocket protocol, `/metrics`
-output: **[`docs/API.md`](docs/API.md)**.
+Send the token as `?token=...` or `Authorization: Bearer ...`.
 
-## Use it from your website
+## Using it from a website
 
-Live push (recommended):
+Live updates (recommended):
 
 ```js
 const ws = new WebSocket("wss://monitor.example.com/ws?token=YOUR_TOKEN");
@@ -113,7 +77,7 @@ ws.onmessage = (ev) => {
 };
 ```
 
-Plain polling:
+Polling:
 
 ```js
 const res = await fetch("https://monitor.example.com/api/status", {
@@ -122,25 +86,27 @@ const res = await fetch("https://monitor.example.com/api/status", {
 const data = await res.json();
 ```
 
-## Deploy
+A token used in browser code is visible to anyone who opens the page. It
+keeps random scanners out, not your visitors. If the stats shouldn't be
+public, put the page behind a login.
 
-- **Behind nginx:** see `nginx.conf.example` - the key part is forwarding the
-  `Upgrade`/`Connection` headers on `/ws`.
-- **systemd:** create a `statusserver` user, put the binary and a
-  `config.json` in `/opt/statusserver` (owned by that user), then install
-  `statusserver.service` and run `sudo systemctl enable --now statusserver`.
+**Good to know**
 
-## Good to know
+- Each disk's `total_bytes` is its own size, so there's nothing to configure.
+  A device mounted in several places is reported once.
+- `max_mbps` only appears on an interface if you set `network_max_mbps`; use
+  it to draw a "% of link" bar.
+- `uptime.percent_*` measures the agent's own reliability (was it running and
+  reporting?), not the host's. A fresh install starts at 100%.
 
-- Each storage entry's `total_bytes` *is* its max (a 2 TB drive reports 2 TB,
-  a 32 GB rootfs reports 32 GB) - no global cap to configure. A device mounted
-  in several places (bind mounts) is reported once.
-- Network has no inherent max, so `max_mbps` only appears if you set it in
-  `network_max_mbps`; use it client-side to draw a "% of link" bar.
-- `uptime.percent_*` reflects how reliably *this agent* has been running and
-  reporting, not the host's raw uptime. A fresh install starts at 100%.
-- `/api/status`, `/ws` and `/metrics` are open to anyone who can reach the port
-  until you set `auth_token`. The agent logs a warning at startup if it's
-  listening beyond loopback without one.
+## Development
 
-See [`docs/API.md`](docs/API.md) for the complete response shape.
+```bash
+cd source
+go vet ./...
+go test -race ./...
+```
+
+CI runs formatting, vet, race-enabled tests on the two supported Go
+releases, govulncheck, and cross-builds. The Docker image is only published
+after CI passes.

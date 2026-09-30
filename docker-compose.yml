@@ -48,14 +48,9 @@ services:
       # tls material, if serving https/wss directly:
       # - ./certs:/certs:ro
 
-    # host monitoring: by default the container reports its OWN namespaced
-    # view. to report real HOST metrics, add the two mounts below to volumes,
-    # set `pid: host`, and add HOST_PROC/HOST_SYS to environment:
-    #   volumes:      - /proc:/host/proc:ro
-    #                 - /sys:/host/sys:ro
-    #   environment:  HOST_PROC: /host/proc
-    #                 HOST_SYS: /host/sys
-    # pid: host
+    # this reports the container's OWN view: its network interface and its
+    # filesystems. to report the host it runs on instead, use
+    # docker-compose.host.yml.
 
 volumes:
   statusserver-data:

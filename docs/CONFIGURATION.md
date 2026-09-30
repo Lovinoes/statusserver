@@ -8,7 +8,10 @@ Config resolves in three layers, each overriding the last:
 3. **environment variables** - override individual settings; env always wins.
 
 So you can run the container with no files and set everything via env, drop in
-a `config.json`, or mix both (file for the bulk, env for the secrets).
+a `config.json`, or mix both (file for the bulk, env for the secrets). Where
+the file lives for each kind of install is covered in
+[INSTALLATION.md](INSTALLATION.md). With the systemd setup it's
+`/etc/statusserver/config.json`. Config changes take effect after a restart.
 
 The agent checks the result at startup and refuses to start, with a clear
 message, on anything that can't work: malformed JSON, a value of the wrong
@@ -145,9 +148,10 @@ sensor" from "access denied".
 
 ### `uptime_file`
 Where the agent persists its own uptime history for the `percent_*` figures.
-Must be writable by the service (systemd: inside `/opt/statusserver`;
-container: the `/data` volume). Defaults to `uptime.json` in the working
-directory; missing parent directories are created.
+Must be writable by the service. Defaults to `uptime.json` in the working
+directory, which is `/var/lib/statusserver` under the bundled systemd unit;
+the container image sets `UPTIME_FILE=/data/uptime.json` (the data volume).
+Missing parent directories are created.
 
 The file is written at most once a minute (to spare SD cards and SSDs) and on
 clean shutdown, always atomically. A hard crash loses at most the last
@@ -229,10 +233,29 @@ set and at least one threshold is non-zero.
   `memory.used_percent`, `disk_percent` vs each disk's `used_percent`, and
   `temp_c` vs `cpu.temperature_c` (skipped when there is no sensor).
 
+## Monitoring the host from a container
+
+These environment variables aren't agent settings. They're read by the
+metrics library, and point it at the host's files when the agent runs in a
+container. [`docker-compose.host.yml`](../docker-compose.host.yml) sets all of
+them.
+
+| Env var | Example | Effect |
+| --- | --- | --- |
+| `HOST_PROC` | `/hostfs/proc` | Read CPU, memory, uptime and the mount list from the host's `/proc` |
+| `HOST_SYS` | `/hostfs/sys` | Read temperature sensors from the host's `/sys` |
+| `HOST_ETC` | `/hostfs/etc` | Read the host's OS/platform info |
+| `HOST_ROOT` | `/hostfs` | Measure disk usage through the host's root filesystem |
+
+Network interfaces can't be redirected this way. The container has to use
+the host's network (`network_mode: host`) to see them.
+
 ## Worked examples
 
 - [`config.example.json`](../config.example.json) - every option, as a config file.
 - [`.env.example`](../.env.example) - the common subset as env vars, for `docker-compose.yml`.
+- [`docker-compose.host.yml`](../docker-compose.host.yml) - monitoring the Docker host itself.
+- [`statusserver.service`](../statusserver.service) - hardened systemd unit (install steps in [INSTALLATION.md](INSTALLATION.md)).
 
 ## Command-line flags
 

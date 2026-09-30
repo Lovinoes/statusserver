@@ -1,3 +1,9 @@
+# systemd unit for statusserver. Install steps: docs/INSTALLATION.md
+# ("Standalone"). Layout:
+#   /usr/local/bin/statusserver         binary (root-owned)
+#   /etc/statusserver/config.json       config (root:statusserver, 0640)
+#   /var/lib/statusserver/              uptime history (created by systemd)
+
 [Unit]
 Description=statusserver system status agent
 Documentation=https://github.com/lovinoes/statusserver
@@ -6,13 +12,19 @@ After=network.target
 [Service]
 Type=simple
 User=statusserver
-WorkingDirectory=/opt/statusserver
-ExecStart=/opt/statusserver/statusserver -config /opt/statusserver/config.json
+ExecStart=/usr/local/bin/statusserver -config /etc/statusserver/config.json
 Restart=on-failure
 RestartSec=5
 
-# hardening: no privileges, read-only view of the system, writable only in
-# its own directory (config + uptime history live there).
+# /var/lib/statusserver, owned by the service user; the relative default
+# uptime_file ("uptime.json") lands here.
+StateDirectory=statusserver
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/statusserver
+
+# --- hardening ---------------------------------------------------------------
+# no privileges and a read-only view of the whole system; the state directory
+# above is the only writable path.
 NoNewPrivileges=true
 # to listen on a port below 1024 (e.g. 443 with native TLS), replace the
 # empty bounding set with:
@@ -20,7 +32,6 @@ NoNewPrivileges=true
 #   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=
 ProtectSystem=strict
-ReadWritePaths=/opt/statusserver
 # read-only (not "true"): an inaccessible /home would make its disk usage
 # report the wrong filesystem.
 ProtectHome=read-only
@@ -36,6 +47,7 @@ RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
