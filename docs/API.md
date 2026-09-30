@@ -7,6 +7,8 @@ build-info endpoints are always open.
 - Base URL: `http(s)://<host>:8090` (port and scheme depend on your config).
 - Content type: JSON unless noted otherwise.
 - All timestamps are RFC 3339 / ISO 8601 in UTC.
+- Every `GET` endpoint also answers `HEAD`. Any other method gets
+  `405 Method Not Allowed` with an `Allow` header.
 
 When native TLS is enabled the server enforces TLS 1.3 only with post-quantum
 key exchange (`X25519MLKEM768`, then `X25519`/`secp384r1`) and advertises HTTP/2
@@ -27,8 +29,9 @@ supplied in **either** of two ways:
 | Query parameter | `...?token=YOUR_TOKEN` | browsers / websockets (can't set headers) |
 | `Authorization` header | `Authorization: Bearer YOUR_TOKEN` | server-to-server HTTP |
 
-The comparison is constant-time. A missing or wrong token returns
-`401 Unauthorized`.
+The `Bearer` scheme is case-insensitive. The comparison is constant-time. A
+missing or wrong token returns `401 Unauthorized` with a
+`WWW-Authenticate: Bearer` header.
 
 ## Endpoint summary
 
@@ -52,10 +55,16 @@ Returns the most recently collected [snapshot](#snapshot-object).
 
 - `200 OK` - body is a snapshot object.
 - `401 Unauthorized` - token required/incorrect.
-- `405 Method Not Allowed` - method other than `GET`/`OPTIONS`.
+- `503 Service Unavailable` - no snapshot has been collected yet (only in the
+  first moments after startup). Body: `{"error": "no snapshot collected yet"}`,
+  with a `Retry-After: 1` header.
 
-CORS: if the request `Origin` is in `allowed_origins`, the response echoes
-`Access-Control-Allow-Origin` and related headers.
+Responses carry `Cache-Control: no-store`.
+
+CORS: if the request `Origin` matches `allowed_origins` (see
+[CONFIGURATION.md](CONFIGURATION.md#allowed_origins) for the matching rules),
+the response echoes it in `Access-Control-Allow-Origin` and allows the
+`Authorization` header.
 
 ```bash
 curl -H "Authorization: Bearer YOUR_TOKEN" \
@@ -70,16 +79,21 @@ Upgrades to a websocket and streams snapshots.
 
 Protocol:
 
-1. On connect, the server immediately sends the current snapshot.
-2. Thereafter it sends a fresh snapshot every `interval_seconds`.
+1. On connect, the server sends the current snapshot straight away (or the
+   first one as soon as it's collected, right after startup).
+2. After that it sends a fresh snapshot every `interval_seconds`.
 3. Each message is a single text frame containing one JSON snapshot object.
-4. The server pings every 30s; dead connections are dropped automatically.
-5. The client is not expected to send anything. Incoming frames are read and
-   discarded (control frames are handled).
+4. A client that can't keep up skips intermediate snapshots and always gets
+   the newest one; it never holds up other clients.
+5. The server pings every 30s; dead connections are dropped automatically.
+6. The client is not expected to send anything. Sending a data message closes
+   the connection with status `1008` (Policy Violation).
+7. On shutdown the server closes connections with status `1001` (Going Away).
 
-The websocket origin is validated against `allowed_origins`. If
-`max_conns_per_ip` is set and exceeded, the server accepts then immediately
-closes with status `1013` (Try Again Later).
+The websocket `Origin` is validated against `allowed_origins`; a same-host
+origin is always accepted. A disallowed origin gets `403 Forbidden` before
+the upgrade. If `max_conns_per_ip` is set and exceeded, the server accepts
+then immediately closes with status `1013` (Try Again Later).
 
 ```js
 const ws = new WebSocket("wss://monitor.example.com/ws?token=YOUR_TOKEN");
@@ -101,8 +115,11 @@ Prometheus text exposition format (version 0.0.4). Auth-gated like
 | `statusserver_build_info` | gauge | `version`, `commit`, `go` | Always `1`; build metadata |
 | `statusserver_ws_clients` | gauge | - | Connected websocket clients |
 | `statusserver_scrape_time_seconds` | gauge | - | Unix time of the snapshot |
+| `statusserver_host_info` | gauge | `hostname`,`os`,`platform`,`platform_version`,`kernel_version`,`arch` | Always `1`; host identification |
 | `statusserver_cpu_usage_percent` | gauge | - | CPU utilization 0-100 |
+| `statusserver_cpu_cores` | gauge | - | Logical CPU cores |
 | `statusserver_cpu_temperature_celsius` | gauge | - | CPU temp (omitted if no sensor) |
+| `statusserver_load_average` | gauge | `window` (`1m`/`5m`/`15m`) | Load average (omitted on Windows) |
 | `statusserver_memory_total_bytes` | gauge | - | Total RAM |
 | `statusserver_memory_used_bytes` | gauge | - | Used RAM |
 | `statusserver_memory_used_percent` | gauge | - | Used RAM 0-100 |
@@ -142,8 +159,11 @@ publicly. Used by the container `HEALTHCHECK` (via `statusserver -healthcheck`).
 
 Unauthenticated readiness probe.
 
-- `200 OK` (`ready`) once the first snapshot has been collected.
-- `503 Service Unavailable` (`not ready`) before that.
+- `200 OK` (`ready`) once a snapshot has been collected and sampling is
+  keeping up.
+- `503 Service Unavailable` before the first snapshot (`not ready`), or when
+  the latest snapshot is older than `3 x interval_seconds + 30s` (`stale: ...`),
+  which means collection is stuck (e.g. on a hung network filesystem).
 
 ## `GET /version`
 
@@ -154,7 +174,7 @@ Unauthenticated build info as JSON:
   "version": "1.2.3",
   "commit": "abc1234",
   "date": "2026-01-01T00:00:00Z",
-  "go": "go1.24.0",
+  "go": "go1.27.1",
   "os": "linux",
   "arch": "amd64"
 }
@@ -169,7 +189,21 @@ The payload returned by `/api/status` and pushed over `/ws`:
 ```json
 {
   "timestamp": "2026-06-21T12:00:00Z",
-  "cpu": { "temperature_c": 52.0, "usage_percent": 13.4 },
+  "host": {
+    "hostname": "web-1",
+    "os": "linux",
+    "platform": "debian",
+    "platform_version": "13.1",
+    "kernel_version": "6.12.48-1-amd64",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "temperature_c": 52.0,
+    "usage_percent": 13.4,
+    "model": "AMD Ryzen 7 5700G with Radeon Graphics",
+    "cores": 16,
+    "load": { "load1": 0.42, "load5": 0.35, "load15": 0.3 }
+  },
   "memory": {
     "total_bytes": 34359738368,
     "used_bytes": 5583457280,
@@ -203,7 +237,7 @@ The payload returned by `/api/status` and pushed over `/ws`:
   ],
   "uptime": {
     "seconds": 2374149,
-    "human": "27d 11h 22m 29s",
+    "human": "27d 11h 29m 9s",
     "percent_7d": 100,
     "percent_14d": 99.8,
     "percent_30d": 99.95,
@@ -216,12 +250,28 @@ The payload returned by `/api/status` and pushed over `/ws`:
 
 **`timestamp`** (string) - when the snapshot was collected (RFC 3339, UTC).
 
+**`host`** (object) - static host identification, read once at startup.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `hostname` | string | |
+| `os` | string | e.g. `linux`, `windows`, `darwin` |
+| `platform` | string | Distribution/product, e.g. `debian`, `Microsoft Windows 11 Pro` |
+| `platform_version` | string | e.g. `13.1` |
+| `kernel_version` | string | |
+| `arch` | string | Machine architecture, e.g. `x86_64`, `aarch64` |
+
+Any of these can be an empty string when the OS doesn't expose it.
+
 **`cpu`** (object)
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `temperature_c` | number \| null | `null` when no sensor is exposed (common on VPS) |
-| `usage_percent` | number | Overall CPU utilization, 0-100 |
+| `usage_percent` | number | Overall CPU utilization since the previous sample, 0-100 |
+| `model` | string | CPU model name (may be empty) |
+| `cores` | integer | Logical cores |
+| `load` | object \| null | `load1`/`load5`/`load15` load averages; `null` on Windows, which has none |
 
 **`memory`** (object)
 
@@ -233,11 +283,11 @@ The payload returned by `/api/status` and pushed over `/ws`:
 | `total_human` | string | e.g. `32.00 GiB` |
 | `used_human` | string | e.g. `5.20 GiB` |
 
-**`storage`** (array of objects) - one entry per watched mount.
+**`storage`** (array of objects, never `null`) - one entry per watched mount.
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `mount` | string | Mountpoint, e.g. `/` |
+| `mount` | string | Mountpoint, e.g. `/` (`C:` on Windows) |
 | `device` | string | Backing device, e.g. `/dev/sda1` |
 | `fstype` | string | Filesystem type, e.g. `ext4` |
 | `total_bytes` | integer | Size of this filesystem |
@@ -249,13 +299,14 @@ The payload returned by `/api/status` and pushed over `/ws`:
 Each entry's `total_bytes` is its own max - a 2 TB drive reports 2 TB, a
 32 GB rootfs reports 32 GB. There is no global cap to configure.
 
-**`network`** (array of objects) - one entry per watched interface.
+**`network`** (array of objects, never `null`) - one entry per watched
+interface.
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `interface` | string | Interface name, e.g. `eth0` |
-| `rx_bytes_per_sec` | number | Receive rate |
-| `tx_bytes_per_sec` | number | Transmit rate |
+| `rx_bytes_per_sec` | number | Receive rate (0 in the very first snapshot) |
+| `tx_bytes_per_sec` | number | Transmit rate (0 in the very first snapshot) |
 | `rx_human` | string | Auto-scaled, e.g. `42.00 MiB/s` |
 | `tx_human` | string | Auto-scaled, e.g. `1.25 MiB/s` |
 | `rx_total_bytes` | integer | Cumulative received since boot |
@@ -270,7 +321,7 @@ Each entry's `total_bytes` is its own max - a 2 TB drive reports 2 TB, a
 | Field | Type | Notes |
 | --- | --- | --- |
 | `seconds` | integer | Host uptime, seconds since boot |
-| `human` | string | e.g. `27d 11h 22m 29s` |
+| `human` | string | e.g. `27d 11h 29m 9s` |
 | `percent_7d` | number | Agent reporting reliability, trailing 7 days |
 | `percent_14d` | number | ...trailing 14 days |
 | `percent_30d` | number | ...trailing 30 days |
@@ -279,8 +330,9 @@ Each entry's `total_bytes` is its own max - a 2 TB drive reports 2 TB, a
 `percent_*` reflects how reliably *this agent* has been running and
 reporting, not the host's raw uptime. A host up for 27 days straight but whose
 statusserver service crash-looped for an hour last week shows a high `seconds`
-but `percent_7d` a little under 100. A brand new install starts at 100%
-(there is no history yet to penalize it).
+but `percent_7d` a little under 100. Time before the agent was first started
+doesn't count against it, so a brand new install starts at 100%. Days are UTC
+days.
 
 ## Status codes
 
@@ -289,5 +341,7 @@ but `percent_7d` a little under 100. A brand new install starts at 100%
 | `200 OK` | Success |
 | `204 No Content` | CORS preflight (`OPTIONS /api/status`) |
 | `401 Unauthorized` | Missing/incorrect token |
+| `403 Forbidden` | Websocket `Origin` not in `allowed_origins` |
+| `404 Not Found` | Unknown path |
 | `405 Method Not Allowed` | Wrong HTTP method |
-| `503 Service Unavailable` | Not ready yet (`/readyz`) |
+| `503 Service Unavailable` | No snapshot yet (`/api/status`, `/readyz`) or collection stuck (`/readyz`) |

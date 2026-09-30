@@ -1,5 +1,11 @@
-# reverse proxy for the status server on 127.0.0.1:8090. drop this into a
-# server{} block (with your own ssl_certificate lines).
+# reverse proxy for the status server on 127.0.0.1:8090. drop this into your
+# nginx config (with your own ssl_certificate lines).
+#
+# run the agent with LISTEN_ADDR=127.0.0.1:8090 so it's only reachable through
+# nginx, and set TRUST_PROXY_HEADERS=true so per-ip websocket limits see the
+# real client ip. the agent takes the LAST X-Forwarded-For entry - the one
+# nginx appends below - so a client can't spoof its ip by sending its own
+# X-Forwarded-For header. this assumes nginx is the only proxy in front.
 #
 # heads up: terminating tls here means nginx's tls settings apply to clients,
 # not the agent's. the agent's tls 1.3-only / post-quantum (X25519MLKEM768)
@@ -15,23 +21,26 @@ server {
     # ssl_certificate     /etc/letsencrypt/live/monitor.example.com/fullchain.pem;
     # ssl_certificate_key /etc/letsencrypt/live/monitor.example.com/privkey.pem;
 
-    location /ws {
-        proxy_pass http://127.0.0.1:8090/ws;
+    location = /ws {
+        proxy_pass http://127.0.0.1:8090;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        # needed if you enable TRUST_PROXY_HEADERS so per-ip limits see the
-        # real client ip instead of 127.0.0.1.
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 3600s;   # keep long-lived websockets alive
+        # the agent pings every 30s, so this only has to outlast one ping.
+        proxy_read_timeout 120s;
     }
 
-    location /api/ {
-        proxy_pass http://127.0.0.1:8090/api/;
+    location = /api/status {
+        proxy_pass http://127.0.0.1:8090;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
+
+    # optional: expose prometheus metrics (still token-protected).
+    # location = /metrics {
+    #     proxy_pass http://127.0.0.1:8090;
+    #     proxy_set_header Host $host;
+    # }
 }

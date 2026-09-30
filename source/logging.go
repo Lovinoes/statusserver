@@ -71,10 +71,16 @@ func (w *logResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return c, rw, err
 }
 
-// accessLog logs one line per http request. in debug mode it also logs request
-// headers and query details (with secrets redacted).
+// accessLog logs one line per http request, except the /healthz and /readyz
+// probes (polled constantly by docker/kubernetes) unless debug is on. in
+// debug mode it also logs request headers and query details (with secrets
+// redacted). a websocket's line is written when the connection ends.
 func accessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !debugMode() && (r.URL.Path == "/healthz" || r.URL.Path == "/readyz") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		start := time.Now()
 
 		lw := &logResponseWriter{ResponseWriter: w, status: http.StatusOK}
@@ -95,23 +101,13 @@ func accessLog(next http.Handler) http.Handler {
 		dur := time.Since(start)
 		if lw.hijacked {
 			// hijacked (websocket): status/bytes aren't meaningful.
-			log.Printf("%s %s %s [upgraded] %s",
-				clientIP(r), r.Method, r.URL.Path, dur.Round(time.Microsecond))
+			log.Printf("%s %s %s [websocket closed] %s",
+				transportIP(r), r.Method, r.URL.Path, dur.Round(time.Millisecond))
 			return
 		}
 		log.Printf("%s %s %s -> %d (%d bytes) %s",
-			clientIP(r), r.Method, r.URL.Path, lw.status, lw.bytes, dur.Round(time.Microsecond))
+			transportIP(r), r.Method, r.URL.Path, lw.status, lw.bytes, dur.Round(time.Microsecond))
 	})
-}
-
-// clientIP returns a best-effort client address for logging only (always the
-// transport address, never a spoofable header).
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // redactHeader hides the value of sensitive headers so tokens never reach logs.

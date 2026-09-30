@@ -1,5 +1,6 @@
 [Unit]
-Description=Status Monitoring Server
+Description=statusserver system status agent
+Documentation=https://github.com/lovinoes/statusserver
 After=network.target
 
 [Service]
@@ -10,11 +11,31 @@ ExecStart=/opt/statusserver/statusserver -config /opt/statusserver/config.json
 Restart=on-failure
 RestartSec=5
 
-# basic hardening - drop privileges, no write access outside its own dir
+# hardening: no privileges, read-only view of the system, writable only in
+# its own directory (config + uptime history live there).
 NoNewPrivileges=true
+# to listen on a port below 1024 (e.g. 443 with native TLS), replace the
+# empty bounding set with:
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+#   CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=
 ProtectSystem=strict
-ProtectHome=true
 ReadWritePaths=/opt/statusserver
+# read-only (not "true"): an inaccessible /home would make its disk usage
+# report the wrong filesystem.
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

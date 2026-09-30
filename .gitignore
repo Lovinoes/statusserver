@@ -1,19 +1,21 @@
 # --- Compiled binaries ---
-# Built via `go build -o statusserver .` (and cross-compiled variants).
-/statusserver
-/statusserver.exe
-/statusserver-*
+# `go build` in source/ produces source/statusserver(.exe); cross-compiled
+# variants are statusserver-<os>-<arch>.
+statusserver
+statusserver.exe
+statusserver-*
+!statusserver.service
 *.exe
 
 # --- Local runtime config and persisted state ---
 # Real config lives locally; only config.example.json is tracked.
-/config.json
+config.json
 *.local.json
-config.local.json
-# Persisted uptime history and its atomic-write temp file.
-/uptime.json
-/uptime.json.tmp
+# Persisted uptime history, its atomic-write temp file, and a moved-aside
+# corrupt copy.
+uptime.json
 uptime.json.tmp
+uptime.json.corrupt
 
 # --- Secrets: TLS material and env files ---
 # The server can serve native TLS, so never commit keys/certs.
@@ -36,18 +38,15 @@ uptime.json.tmp
 coverage.*
 /dist/
 /bin/
-# Object/archive files and debug binaries.
 *.o
 *.a
 *.so
-__debug_bin
 __debug_bin*
-# Vendored deps and Go workspace files (we rely on the module cache).
 /vendor/
+/source/vendor/
 go.work
 go.work.sum
-# Local Go build/test cache if it ever lands in-tree.
-/.gocache/
+.gocache/
 
 # --- Editor / OS noise ---
 .vscode/

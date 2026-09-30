@@ -6,39 +6,51 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
+const (
+	alertQueueSize   = 32
+	alertAttempts    = 3
+	alertPostTimeout = 10 * time.Second
+	alertMaxBackoff  = time.Minute
+)
+
+// alertBackoff is the first retry delay (doubling after); a var for tests.
+var alertBackoff = 2 * time.Second
+
 // Notifier posts a webhook message when a monitored metric crosses its
 // threshold. Alerts are edge-triggered: one message on OK->breach, one on
-// recovery, avoiding per-interval spam.
+// recovery, avoiding per-interval spam. Messages go out one at a time, in
+// order, from a single delivery goroutine (Run).
 type Notifier struct {
-	cfg    AlertConfig
-	client *http.Client
-
-	mu      sync.Mutex
-	firing  map[string]bool // alert key -> in breach
+	cfg     AlertConfig
+	client  *http.Client
 	enabled bool
+
+	firing map[string]bool // alert key -> in breach; only touched by Check
+	queue  chan string
 }
 
 // NewNotifier builds a Notifier. Inert if no webhook URL or thresholds set.
 func NewNotifier(cfg AlertConfig) *Notifier {
-	enabled := cfg.WebhookURL != "" &&
-		(cfg.CPUPercent > 0 || cfg.MemoryPercent > 0 || cfg.DiskPercent > 0 || cfg.TempC > 0)
+	enabled := cfg.WebhookURL != "" && cfg.anyThreshold()
 	if enabled {
 		log.Printf("alerts enabled -> %s (format %q)", redactURL(cfg.WebhookURL), cmp.Or(cfg.WebhookFormat, "generic"))
 	}
 	return &Notifier{
 		cfg:     cfg,
-		client:  &http.Client{Timeout: 10 * time.Second},
-		firing:  map[string]bool{},
+		client:  &http.Client{Timeout: alertPostTimeout},
 		enabled: enabled,
+		firing:  map[string]bool{},
+		queue:   make(chan string, alertQueueSize),
 	}
 }
 
@@ -52,9 +64,10 @@ func redactURL(raw string) string {
 	return u.Scheme + "://" + u.Host + "/[redacted]"
 }
 
-// Check evaluates a snapshot and dispatches transition notifications in the
-// background, never blocking the collection loop.
-func (n *Notifier) Check(ctx context.Context, snap Snapshot) {
+// Check evaluates a snapshot and queues a message for any transitions. It
+// never blocks the collection loop; if the queue is full the message is
+// dropped (and logged).
+func (n *Notifier) Check(snap Snapshot) {
 	if !n.enabled {
 		return
 	}
@@ -62,10 +75,16 @@ func (n *Notifier) Check(ctx context.Context, snap Snapshot) {
 	if len(msgs) == 0 {
 		return
 	}
-	sort.Strings(msgs)
 	body := strings.Join(msgs, "\n")
-	debugf("alert transition(s) detected, posting %d message(s) to webhook", len(msgs))
-	go n.post(ctx, body)
+	if h := snap.Host.Hostname; h != "" {
+		body = "[" + h + "]\n" + body
+	}
+	debugf("alert transition(s) detected, queueing %d message(s)", len(msgs))
+	select {
+	case n.queue <- body:
+	default:
+		log.Printf("alert queue full, dropping alert: %s", strings.ReplaceAll(body, "\n", " | "))
+	}
 }
 
 // evaluate compares the snapshot against thresholds, updates firing state, and
@@ -87,22 +106,14 @@ func (n *Notifier) evaluate(snap Snapshot) []string {
 		evals = append(evals, eval{"memory", "Memory usage", snap.Memory.UsedPercent, n.cfg.MemoryPercent, "%"})
 	}
 	if n.cfg.TempC > 0 && snap.CPU.TemperatureC != nil {
-		evals = append(evals, eval{"temp", "CPU temperature", *snap.CPU.TemperatureC, n.cfg.TempC, "\u00b0C"})
+		evals = append(evals, eval{"temp", "CPU temperature", *snap.CPU.TemperatureC, n.cfg.TempC, "°C"})
 	}
 	if n.cfg.DiskPercent > 0 {
 		for _, d := range snap.Storage {
-			evals = append(evals, eval{
-				key:       "disk:" + d.Mount,
-				label:     "Disk usage (" + d.Mount + ")",
-				value:     d.UsedPercent,
-				threshold: n.cfg.DiskPercent,
-				unit:      "%",
-			})
+			evals = append(evals, eval{"disk:" + d.Mount, "Disk usage (" + d.Mount + ")", d.UsedPercent, n.cfg.DiskPercent, "%"})
 		}
 	}
 
-	n.mu.Lock()
-	defer n.mu.Unlock()
 	var msgs []string
 	for _, e := range evals {
 		breaching := e.value >= e.threshold
@@ -114,53 +125,111 @@ func (n *Notifier) evaluate(snap Snapshot) []string {
 				e.label, e.value, e.unit, e.threshold, e.unit))
 		case !breaching && was:
 			delete(n.firing, e.key)
-			msgs = append(msgs, fmt.Sprintf("\u2705 RECOVERED: %s back to %.1f%s (threshold %.1f%s)",
+			msgs = append(msgs, fmt.Sprintf("✅ RECOVERED: %s back to %.1f%s (threshold %.1f%s)",
 				e.label, e.value, e.unit, e.threshold, e.unit))
 		}
 	}
+	sort.Strings(msgs)
 	return msgs
 }
 
-// post delivers a message to the configured webhook.
-func (n *Notifier) post(ctx context.Context, message string) {
-	payload, contentType := n.payload(message)
+// Run delivers queued messages until ctx is done.
+func (n *Notifier) Run(ctx context.Context) {
+	if !n.enabled {
+		return
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-n.queue:
+			n.deliver(ctx, msg)
+		}
+	}
+}
 
-	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+// deliver posts one message, retrying network errors, 429s and 5xx with
+// backoff (honoring Retry-After).
+func (n *Notifier) deliver(ctx context.Context, message string) {
+	payload := n.payload(message)
+	backoff := alertBackoff
+	for attempt := 1; ; attempt++ {
+		retry, wait, err := n.post(ctx, payload)
+		if err == nil {
+			debugf("alert webhook delivered")
+			return
+		}
+		if !retry || attempt >= alertAttempts || ctx.Err() != nil {
+			log.Printf("alert delivery failed (attempt %d/%d): %v", attempt, alertAttempts, err)
+			return
+		}
+		wait = min(max(wait, backoff), alertMaxBackoff)
+		debugf("alert delivery attempt %d failed (%v), retrying in %s", attempt, err, wait)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		backoff *= 2
+	}
+}
+
+// post sends one request. It reports whether a failure is worth retrying
+// and how long the server asked us to wait.
+func (n *Notifier) post(ctx context.Context, payload []byte) (retry bool, wait time.Duration, err error) {
+	reqCtx, cancel := context.WithTimeout(ctx, alertPostTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, n.cfg.WebhookURL, bytes.NewReader(payload))
 	if err != nil {
-		log.Println("alert request build error:", err)
-		return
+		return false, 0, err
 	}
-	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "statusserver/"+version)
 
 	resp, err := n.client.Do(req)
 	if err != nil {
-		log.Println("alert delivery error:", err)
-		return
+		// the url may carry a secret; *url.Error includes it verbatim.
+		return true, 0, fmt.Errorf("post to %s: %s", redactURL(n.cfg.WebhookURL), unwrapURLError(err))
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		log.Printf("alert webhook returned %d", resp.StatusCode)
-		return
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) // allow conn reuse
+
+	if resp.StatusCode < 300 {
+		return false, 0, nil
 	}
-	debugf("alert webhook delivered ok (status %d)", resp.StatusCode)
+	err = fmt.Errorf("webhook returned %s", resp.Status)
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		if secs, perr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); perr == nil && secs > 0 {
+			wait = time.Duration(secs) * time.Second
+		}
+		return true, wait, err
+	}
+	return false, 0, err
 }
 
-func (n *Notifier) payload(message string) ([]byte, string) {
-	switch strings.ToLower(n.cfg.WebhookFormat) {
+// unwrapURLError drops the request URL from a *url.Error message.
+func unwrapURLError(err error) string {
+	if ue, ok := err.(*url.Error); ok {
+		return ue.Err.Error()
+	}
+	return err.Error()
+}
+
+func (n *Notifier) payload(message string) []byte {
+	var v any
+	switch n.cfg.WebhookFormat {
 	case "discord":
-		b, _ := json.Marshal(map[string]string{"content": message})
-		return b, "application/json"
+		// never let a hostname or mount path ping @everyone.
+		v = map[string]any{"content": message, "allowed_mentions": map[string]any{"parse": []string{}}}
 	case "slack":
-		b, _ := json.Marshal(map[string]string{"text": message})
-		return b, "application/json"
+		v = map[string]string{"text": message}
 	default:
-		b, _ := json.Marshal(map[string]any{
+		v = map[string]string{
 			"message":   message,
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"source":    "statusserver",
-		})
-		return b, "application/json"
+		}
 	}
+	b, _ := json.Marshal(v) // plain maps of strings can't fail to marshal
+	return b
 }

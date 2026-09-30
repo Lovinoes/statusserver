@@ -1,12 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
+	"net/url"
 	"os"
+	"path"
 	"strconv"
 	"strings"
+)
+
+const (
+	defaultListenAddr = ":8090"
+	defaultInterval   = 5
+	defaultUptimeFile = "uptime.json"
 )
 
 // Config is the resolved runtime configuration: defaults, then optional json
@@ -51,117 +62,139 @@ type AlertConfig struct {
 
 func defaultConfig() Config {
 	return Config{
-		ListenAddr:      ":8090",
-		IntervalSeconds: 5,
+		ListenAddr:      defaultListenAddr,
+		IntervalSeconds: defaultInterval,
 		AllowedOrigins:  []string{"*"},
-		UptimeFile:      "uptime.json",
+		UptimeFile:      defaultUptimeFile,
 	}
 }
 
-// loadConfig resolves config from the given file path (may not exist)
-// overlaid with environment variables.
-func loadConfig(path string) Config {
+// loadConfig resolves config from the given file overlaid with environment
+// variables. A missing file is fine unless the path was given explicitly.
+func loadConfig(path string, explicit bool) (Config, error) {
 	cfg := defaultConfig()
 
-	if f, err := os.Open(path); err != nil {
-		log.Printf("no config file at %s, using defaults + environment", path)
-	} else {
-		defer f.Close()
-		if err := json.NewDecoder(f).Decode(&cfg); err != nil {
-			log.Fatalf("failed to parse config %s: %v", path, err)
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if err := parseConfigFile(data, &cfg); err != nil {
+			return cfg, fmt.Errorf("config %s: %w", path, err)
 		}
+	case errors.Is(err, fs.ErrNotExist) && !explicit:
+		log.Printf("no config file at %s, using defaults + environment", path)
+	default:
+		return cfg, fmt.Errorf("read config: %w", err)
 	}
 
 	applyEnv(&cfg)
-	normalizeConfig(&cfg)
-	return cfg
+	if err := normalizeConfig(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// parseConfigFile decodes a json config over cfg. Syntax errors are fatal;
+// unknown keys (usually typos) are only warned about so a config written for
+// a newer version still loads.
+func parseConfigFile(data []byte, cfg *Config) error {
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")) // BOM from windows editors
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var probe Config
+	if err := dec.Decode(&probe); err != nil {
+		log.Printf("WARNING: config: %v (ignored)", err)
+	}
+	return nil
 }
 
 // applyEnv overlays any set environment variables onto cfg.
 func applyEnv(cfg *Config) {
-	if v, ok := os.LookupEnv("LISTEN_ADDR"); ok {
-		cfg.ListenAddr = v
-	}
-	if v, ok := os.LookupEnv("INTERVAL_SECONDS"); ok {
-		cfg.IntervalSeconds = atoiOr(v, cfg.IntervalSeconds)
-	}
-	if v, ok := os.LookupEnv("AUTH_TOKEN"); ok {
-		cfg.AuthToken = v
-	}
-	if v, ok := os.LookupEnv("ALLOWED_ORIGINS"); ok {
-		cfg.AllowedOrigins = splitList(v)
-	}
-	if v, ok := os.LookupEnv("DISKS"); ok {
-		cfg.Disks = splitList(v)
-	}
-	if v, ok := os.LookupEnv("NETWORKS"); ok {
-		cfg.Networks = splitList(v)
-	}
+	envString("LISTEN_ADDR", &cfg.ListenAddr)
+	envInt("INTERVAL_SECONDS", &cfg.IntervalSeconds)
+	envString("AUTH_TOKEN", &cfg.AuthToken)
+	envList("ALLOWED_ORIGINS", &cfg.AllowedOrigins)
+	envList("DISKS", &cfg.Disks)
+	envList("NETWORKS", &cfg.Networks)
 	if v, ok := os.LookupEnv("NETWORK_MAX_MBPS"); ok {
 		cfg.NetworkMaxMbps = parseMbpsMap(v)
 	}
-	if v, ok := os.LookupEnv("TEMP_SENSOR_MATCH"); ok {
-		cfg.TempSensorMatch = v
-	}
-	if v, ok := os.LookupEnv("UPTIME_FILE"); ok {
-		cfg.UptimeFile = v
-	}
-	if v, ok := os.LookupEnv("TLS_CERT"); ok {
-		cfg.TLSCert = v
-	}
-	if v, ok := os.LookupEnv("TLS_KEY"); ok {
-		cfg.TLSKey = v
-	}
-	if v, ok := os.LookupEnv("MAX_CONNS_PER_IP"); ok {
-		cfg.MaxConnsPerIP = atoiOr(v, cfg.MaxConnsPerIP)
-	}
-	if v, ok := os.LookupEnv("TRUST_PROXY_HEADERS"); ok {
-		cfg.TrustProxyHeaders = atobOr(v, cfg.TrustProxyHeaders)
-	}
-	if v, ok := os.LookupEnv("DEBUG"); ok {
-		cfg.Debug = atobOr(v, cfg.Debug)
-	}
+	envString("TEMP_SENSOR_MATCH", &cfg.TempSensorMatch)
+	envString("UPTIME_FILE", &cfg.UptimeFile)
+	envString("TLS_CERT", &cfg.TLSCert)
+	envString("TLS_KEY", &cfg.TLSKey)
+	envInt("MAX_CONNS_PER_IP", &cfg.MaxConnsPerIP)
+	envBool("TRUST_PROXY_HEADERS", &cfg.TrustProxyHeaders)
+	envBool("DEBUG", &cfg.Debug)
 
-	if v, ok := os.LookupEnv("ALERT_WEBHOOK_URL"); ok {
-		cfg.Alerts.WebhookURL = v
-	}
-	if v, ok := os.LookupEnv("ALERT_WEBHOOK_FORMAT"); ok {
-		cfg.Alerts.WebhookFormat = v
-	}
-	if v, ok := os.LookupEnv("ALERT_CPU_PERCENT"); ok {
-		cfg.Alerts.CPUPercent = atofOr(v, cfg.Alerts.CPUPercent)
-	}
-	if v, ok := os.LookupEnv("ALERT_MEMORY_PERCENT"); ok {
-		cfg.Alerts.MemoryPercent = atofOr(v, cfg.Alerts.MemoryPercent)
-	}
-	if v, ok := os.LookupEnv("ALERT_DISK_PERCENT"); ok {
-		cfg.Alerts.DiskPercent = atofOr(v, cfg.Alerts.DiskPercent)
-	}
-	if v, ok := os.LookupEnv("ALERT_TEMP_C"); ok {
-		cfg.Alerts.TempC = atofOr(v, cfg.Alerts.TempC)
-	}
+	envString("ALERT_WEBHOOK_URL", &cfg.Alerts.WebhookURL)
+	envString("ALERT_WEBHOOK_FORMAT", &cfg.Alerts.WebhookFormat)
+	envFloat("ALERT_CPU_PERCENT", &cfg.Alerts.CPUPercent)
+	envFloat("ALERT_MEMORY_PERCENT", &cfg.Alerts.MemoryPercent)
+	envFloat("ALERT_DISK_PERCENT", &cfg.Alerts.DiskPercent)
+	envFloat("ALERT_TEMP_C", &cfg.Alerts.TempC)
 }
 
-// normalizeConfig clamps invalid values back to safe defaults.
-func normalizeConfig(cfg *Config) {
+// normalizeConfig clamps out-of-range values back to safe defaults (with a
+// warning) and returns an error for settings that can't work at all.
+func normalizeConfig(cfg *Config) error {
+	cfg.ListenAddr = strings.TrimSpace(cfg.ListenAddr)
 	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = ":8090"
+		cfg.ListenAddr = defaultListenAddr
 	}
 	if cfg.IntervalSeconds <= 0 {
-		cfg.IntervalSeconds = 5
+		log.Printf("WARNING: interval_seconds %d is invalid, using %d", cfg.IntervalSeconds, defaultInterval)
+		cfg.IntervalSeconds = defaultInterval
 	}
 	if len(cfg.AllowedOrigins) == 0 {
 		cfg.AllowedOrigins = []string{"*"}
 	}
+	for _, o := range cfg.AllowedOrigins {
+		if _, err := path.Match(o, ""); err != nil {
+			return fmt.Errorf("allowed_origins: bad pattern %q: %w", o, err)
+		}
+	}
 	if cfg.UptimeFile == "" {
-		cfg.UptimeFile = "uptime.json"
+		cfg.UptimeFile = defaultUptimeFile
 	}
 	if cfg.MaxConnsPerIP < 0 {
+		log.Printf("WARNING: max_conns_per_ip %d is negative, using 0 (unlimited)", cfg.MaxConnsPerIP)
 		cfg.MaxConnsPerIP = 0
 	}
 	if (cfg.TLSCert == "") != (cfg.TLSKey == "") {
-		log.Fatal("tls_cert and tls_key must both be set, or both be empty")
+		return errors.New("tls_cert and tls_key must both be set, or both be empty")
 	}
+
+	a := &cfg.Alerts
+	a.WebhookFormat = strings.ToLower(strings.TrimSpace(a.WebhookFormat))
+	switch a.WebhookFormat {
+	case "", "generic", "discord", "slack":
+	default:
+		log.Printf("WARNING: unknown alerts.webhook_format %q, using generic", a.WebhookFormat)
+		a.WebhookFormat = "generic"
+	}
+	for _, t := range []*float64{&a.CPUPercent, &a.MemoryPercent, &a.DiskPercent, &a.TempC} {
+		if *t < 0 {
+			log.Printf("WARNING: negative alert threshold %v, disabling that check", *t)
+			*t = 0
+		}
+	}
+	if a.WebhookURL != "" {
+		u, err := url.Parse(a.WebhookURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("alerts.webhook_url must be an absolute http(s) URL (got %s)", redactURL(a.WebhookURL))
+		}
+		if !a.anyThreshold() {
+			log.Println("WARNING: alerts.webhook_url is set but every threshold is 0; alerts stay off")
+		}
+	}
+	return nil
+}
+
+func (a AlertConfig) anyThreshold() bool {
+	return a.CPUPercent > 0 || a.MemoryPercent > 0 || a.DiskPercent > 0 || a.TempC > 0
 }
 
 // TLSEnabled reports whether HTTPS should be served.
@@ -182,35 +215,28 @@ func (c Config) redactedString() string {
 // splitList parses a comma-separated value into a trimmed, non-empty slice;
 // empty input yields nil ("unset / auto").
 func splitList(v string) []string {
-	parts := strings.Split(v, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}
 	}
-	if len(out) == 0 {
-		return nil
-	}
 	return out
 }
 
-// parseMbpsMap parses "eth0=1000,eth1=500" into a map.
+// parseMbpsMap parses "eth0=1000,eth1=500" into a map, skipping (and warning
+// about) malformed pairs.
 func parseMbpsMap(v string) map[string]float64 {
 	out := map[string]float64{}
-	for _, pair := range strings.Split(v, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
+	for _, pair := range splitList(v) {
 		k, val, found := strings.Cut(pair, "=")
 		k = strings.TrimSpace(k)
-		if !found || k == "" {
+		f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		if !found || k == "" || err != nil || f <= 0 {
+			log.Printf("WARNING: NETWORK_MAX_MBPS: ignoring malformed entry %q", pair)
 			continue
 		}
-		if f, err := strconv.ParseFloat(strings.TrimSpace(val), 64); err == nil {
-			out[k] = f
-		}
+		out[k] = f
 	}
 	if len(out) == 0 {
 		return nil
@@ -218,23 +244,47 @@ func parseMbpsMap(v string) map[string]float64 {
 	return out
 }
 
-func atoiOr(s string, fallback int) int {
-	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
-		return n
+func envString(name string, dst *string) {
+	if v, ok := os.LookupEnv(name); ok {
+		*dst = v
 	}
-	return fallback
 }
 
-func atofOr(s string, fallback float64) float64 {
-	if f, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil {
-		return f
+func envList(name string, dst *[]string) {
+	if v, ok := os.LookupEnv(name); ok {
+		*dst = splitList(v)
 	}
-	return fallback
 }
 
-func atobOr(s string, fallback bool) bool {
-	if b, err := strconv.ParseBool(strings.TrimSpace(s)); err == nil {
-		return b
+func envInt(name string, dst *int) {
+	if v, ok := os.LookupEnv(name); ok {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			log.Printf("WARNING: %s=%q is not an integer, ignoring", name, v)
+			return
+		}
+		*dst = n
 	}
-	return fallback
+}
+
+func envFloat(name string, dst *float64) {
+	if v, ok := os.LookupEnv(name); ok {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			log.Printf("WARNING: %s=%q is not a number, ignoring", name, v)
+			return
+		}
+		*dst = f
+	}
+}
+
+func envBool(name string, dst *bool) {
+	if v, ok := os.LookupEnv(name); ok {
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			log.Printf("WARNING: %s=%q is not a boolean, ignoring", name, v)
+			return
+		}
+		*dst = b
+	}
 }

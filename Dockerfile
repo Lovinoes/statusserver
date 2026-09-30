@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage ------------------------------------------------------------
-# Pinned to the toolchain declared in go.mod (go 1.24). BuildKit provides
-# TARGETOS/TARGETARCH/TARGETVARIANT automatically for multi-arch builds.
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
+# Builds on the native platform and cross-compiles for the target (BuildKit
+# provides TARGETOS/TARGETARCH/TARGETVARIANT), so multi-arch builds don't run
+# the compiler under emulation.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
-# git is only needed if modules are fetched from VCS; certs let `go` talk to
-# proxy.golang.org over TLS during the build.
+# CA roots, copied into the runtime image so outbound HTTPS webhooks work.
 RUN apk add --no-cache ca-certificates
 
 WORKDIR /src
@@ -34,17 +34,19 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     GOARM=$(printf '%s' "${TARGETVARIANT}" | tr -d 'v') \
     go build -trimpath \
       -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
-      -o /out/statusserver .
+      -o /out/statusserver . \
+ && mkdir -p /out/data
 
 # ---- runtime stage ----------------------------------------------------------
 FROM scratch
 
-# CA roots so outbound HTTPS webhooks (alerts) work.
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/statusserver /statusserver
 
-# Persisted agent-uptime history lives here; declared as a volume so it
-# survives container recreation. Configure via UPTIME_FILE.
+# Persisted agent-uptime history lives here. The directory must exist in the
+# image owned by the runtime uid: docker seeds a new named volume from it, so
+# the volume is writable too (otherwise it would be root-owned).
+COPY --from=build --chown=65532:65532 /out/data /data
 VOLUME ["/data"]
 ENV UPTIME_FILE=/data/uptime.json
 

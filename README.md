@@ -1,14 +1,14 @@
 # statusserver
 
 A tiny Go agent you drop onto any machine to watch its health. It samples
-**CPU, memory, every disk, and per-interface network** every few seconds and
-serves it as JSON over HTTP polling *and* a websocket push stream.
+**CPU, load, memory, every disk, and per-interface network** every few seconds
+and serves it as JSON over HTTP polling *and* a websocket push stream.
 
 Point your status website at it - directly or through nginx - and you're done.
 
 Ships as a single static binary and a multi-arch container image
 (`ghcr.io/lovinoes/statusserver`) for `linux/amd64`, `arm64`, `arm/v7`, and
-`riscv64`.
+`riscv64`. The binary also builds for Windows, macOS and FreeBSD.
 
 ## Why you might like it
 
@@ -18,27 +18,29 @@ Ships as a single static binary and a multi-arch container image
 - **Prometheus** `/metrics` endpoint, no extra dependencies.
 - **Native TLS** - serve `https`/`wss` yourself, no reverse proxy needed.
   Strict TLS 1.3-only with post-quantum key exchange (`X25519MLKEM768`,
-  falling back to `X25519`/`secp384r1`) and HTTP/2.
-- **Threshold alerts** to Discord / Slack / any webhook.
-- **Hardened websockets** - keepalive pings reap dead clients, optional
-  per-IP connection cap.
+  falling back to `X25519`/`secp384r1`) and HTTP/2. Renewed certificates are
+  picked up automatically, no restart needed.
+- **Threshold alerts** to Discord / Slack / any webhook, with retries.
+- **Hardened websockets** - keepalive pings reap dead clients, slow clients
+  can't stall anyone else, optional per-IP connection cap.
 - **Graceful shutdown** plus `/healthz` and `/readyz` probes.
 
 ## What it reports
 
 | | |
 | --- | --- |
-| **CPU** | temperature (where a sensor exists) + usage % |
+| **Host** | hostname, OS, platform, kernel, architecture |
+| **CPU** | usage %, model, core count, load average (not on Windows), temperature (where a sensor exists) |
 | **Memory** | total / used bytes + percent |
 | **Storage** | every disk/mount, each against its *own* size |
 | **Network** | per-interface in/out throughput (raw + human string) |
-| **Uptime** | seconds since boot + a human string like `27d 1h 49m 9s` |
+| **Uptime** | seconds since boot, a human string like `27d 1h 49m 9s`, and how reliably the agent itself has been running over 7/14/30/365 days |
 
 ## Quick start
 
 Docker (configured entirely via env vars - no file needed):
 
-```
+```bash
 docker run -d --name statusserver \
   -p 8090:8090 \
   -e AUTH_TOKEN=change-me \
@@ -47,11 +49,15 @@ docker run -d --name statusserver \
   ghcr.io/lovinoes/statusserver:latest
 ```
 
-Or from source:
+Or `docker compose up -d` with the included `docker-compose.yml` (optionally
+copy `.env.example` to `.env` to change the defaults).
 
-```
+Or from source (Go 1.26+):
+
+```bash
+cd source
 go build -o statusserver .
-./statusserver -config config.json
+./statusserver -config ../config.json
 ```
 
 By default the container reports its *own* namespaced view. To see the real
@@ -89,7 +95,7 @@ Full reference (every option, its env var, default, and behaviour):
 | `/ws` | token | websocket snapshot stream |
 | `/metrics` | token | Prometheus text exposition |
 | `/healthz` | none | liveness (`200 ok`, no system data - safe to expose) |
-| `/readyz` | none | readiness (`200` after first sample) |
+| `/readyz` | none | readiness (`200` once sampling is running) |
 | `/version` | none | build info as JSON |
 
 Full API reference - auth, schemas, the websocket protocol, `/metrics`
@@ -116,19 +122,25 @@ const res = await fetch("https://monitor.example.com/api/status", {
 const data = await res.json();
 ```
 
-## Deploy behind nginx
+## Deploy
 
-See `nginx.conf.example` - the key part is forwarding the `Upgrade`/
-`Connection` headers on `/ws`. For a systemd host, edit and install
-`statusserver.service`, then `sudo systemctl enable --now statusserver`.
+- **Behind nginx:** see `nginx.conf.example` - the key part is forwarding the
+  `Upgrade`/`Connection` headers on `/ws`.
+- **systemd:** create a `statusserver` user, put the binary and a
+  `config.json` in `/opt/statusserver` (owned by that user), then install
+  `statusserver.service` and run `sudo systemctl enable --now statusserver`.
 
 ## Good to know
 
 - Each storage entry's `total_bytes` *is* its max (a 2 TB drive reports 2 TB,
-  a 32 GB rootfs reports 32 GB) - no global cap to configure.
+  a 32 GB rootfs reports 32 GB) - no global cap to configure. A device mounted
+  in several places (bind mounts) is reported once.
 - Network has no inherent max, so `max_mbps` only appears if you set it in
   `network_max_mbps`; use it client-side to draw a "% of link" bar.
 - `uptime.percent_*` reflects how reliably *this agent* has been running and
   reporting, not the host's raw uptime. A fresh install starts at 100%.
+- `/api/status`, `/ws` and `/metrics` are open to anyone who can reach the port
+  until you set `auth_token`. The agent logs a warning at startup if it's
+  listening beyond loopback without one.
 
 See [`docs/API.md`](docs/API.md) for the complete response shape.

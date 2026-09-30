@@ -1,24 +1,32 @@
+# Only source/ is needed to build the image; keep everything else out of the
+# build context.
+
 # VCS / CI
 .git
 .gitignore
 .github
 
-# Docs & local dev artifacts
-README.md
+# Docs, examples & deployment files
 *.md
 LICENSE
 statusserver.service
 nginx.conf.example
+docker-compose.yml
+.env.example
+config.example.json
 
 # Local config & runtime state (configure the container via env instead)
-config.json
-uptime.json
-*.log
+**/config.json
+**/uptime.json*
+**/*.log
 .env
 
-# Build outputs
-statusserver
-statusserver.exe
+# Build outputs and secrets
+**/statusserver
+**/statusserver.exe
+**/*.exe
+**/*.pem
+**/*.key
 /dist/
 /out/
 
