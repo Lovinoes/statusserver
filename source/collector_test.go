@@ -14,13 +14,14 @@ import (
 
 func TestIsLikelyVirtual(t *testing.T) {
 	virtual := []string{"lo", "lo0", "lo:1", "Loopback Pseudo-Interface 1", "docker0", "veth1234",
-		"br-abcdef", "virbr0", "vnet3", "tun0", "tap0", "cni0", "flannel.1", "cali123", "vxlan.calico", "kube-ipvs0"}
+		"br-abcdef", "virbr0", "vnet3", "tun0", "tap0", "cni0", "flannel.1", "cali123", "vxlan.calico", "kube-ipvs0",
+		"fwbr100i0", "fwpr100p0", "fwln100i0", "tap100i0", "veth101i0"}
 	for _, n := range virtual {
 		if !isLikelyVirtual(n) {
 			t.Errorf("expected %q to be treated as virtual", n)
 		}
 	}
-	physical := []string{"eth0", "enp3s0", "wlan0", "ens18", "Ethernet", "Wi-Fi", "Local Area Connection", "wg0", "bond0", "en0"}
+	physical := []string{"eth0", "enp3s0", "wlan0", "ens18", "Ethernet", "Wi-Fi", "Local Area Connection", "wg0", "bond0", "en0", "vmbr0", "eno1"}
 	for _, n := range physical {
 		if isLikelyVirtual(n) {
 			t.Errorf("did not expect %q to be treated as virtual", n)

@@ -396,6 +396,8 @@ func pickTemperature(temps []sensors.TemperatureStat, match string) (float64, bo
 var virtualNICPrefixes = []string{
 	"loopback", "docker", "veth", "br-", "virbr", "vnet", "tun", "tap", "cni", "flannel",
 	"cali", "vxlan", "kube-", "lxcbr", "lxdbr", "podman", "dummy", "ifb",
+	// proxmox per-guest firewall plumbing (fwbr100i0, fwpr100p0, fwln100i0).
+	"fwbr", "fwpr", "fwln",
 }
 
 func isLikelyVirtual(name string) bool {
